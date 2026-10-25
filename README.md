@@ -1,6 +1,7 @@
 # Advanced-software-architecture-patterns
 
 **ADR(Architecture Decision Record) for the flash sale system**
+
 **1. ADR header**
 Field	Value
 Project: FLASH SALE SYSTEM
