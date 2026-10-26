@@ -25,22 +25,18 @@ Architecture Decision Records (ADRs) for the flash-sale system, following the
 
 ## Status values
 
-`Proposed` → `Accepted` → (`Deprecated` | `Superseded by …`). `Rejected` for options considered and not taken.
+`Proposed` → `Accepted`
 
 ## How to add an ADR
 
-1. Copy the template below into a new file named with an imperative verb phrase (e.g. `choose-load-test-tool.md`).
-2. Fill in Context with the problem and the options considered, then Decision and Consequences.
-3. Add a row to the log above and commit the ADR with the code change it describes.
-
 ```markdown
-# Title (imperative verb phrase)
-
-**Date:** YYYY-MM-DD
+# Title 
+OPTIMIZING HIGH TRAFFIC ON FLASH SALE 
+**Date:** 2026-10-06
 
 ## Status
 
-Proposed | Accepted | Rejected | Deprecated | Superseded by [x](x.md)
+Proposed | Accepted 
 
 ## Context
 
