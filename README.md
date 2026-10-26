@@ -1,62 +1,56 @@
-# Flash Sale Bottlenecks — System Design Study
+# Architecture Decision Log
 
-> **When 10,000 people click "Buy" at once.**
-> 100 limited-edition shoes · 10,000 buyers · everyone clicks at 12:00.
+Architecture Decision Records (ADRs) for the flash-sale system, following the
+[architecture-decision-record](https://github.com/architecture-decision-record/architecture-decision-record) conventions:
 
-This repository documents what breaks in a flash-sale system under extreme concurrency, and how we resolve each bottleneck **step by step** by applying five architecture patterns. Every fix is backed by a requirement (SRS) and a recorded decision (ADR), and every decision is validated by load testing — evidence, not guesses.
+- **Template:** Michael Nygard — *Title, Status, Context, Decision, Consequences* (plus date and links).
+- **File names:** present-tense imperative verb phrase, lowercase with dashes, `.md`.
+- **One decision per ADR.** A decision is never rewritten; it is amended with a dated note or **superseded** by a new ADR.
 
-## Repository map
+## Log (in the order decisions were made)
 
-| Document | What it contains |
-|---|---|
-| [`docs/srs.md`](docs/srs.md) | Software Requirements Specification following the IEEE 830 template — problems, functional & non-functional requirements, traceability, test plan |
-| [`docs/architecture-patterns.md`](docs/architecture-patterns.md) | The five patterns (Layered, Event-Driven, Microkernel, Microservices, Space-Based) applied to the flash sale, with pattern analysis and summary |
-| [`adr/`](adr/README.md) | Architecture Decision Records (Michael Nygard template) — one decision per file, in the order we made them |
-
-## The five problems
-
-| ID | Problem | One-line cause |
-|---|---|---|
-| **P1** | Database jam | Every request locks the same stock row; more app servers just add more waiters |
-| **P2** | Overselling | "Check stock" and "take stock" are two separate steps, so two buyers both see "1 left" |
-| **P3** | Slow payments | DB connections are held for ~5 s while the bank answers; the pool runs dry |
-| **P4** | Retry storms | Slow pages make users click again → 1× → 2× → 4× load |
-| **P5** | Fairness | Without a policy, who wins depends on network speed, retries or server luck |
-
-## The resolution, step by step
-
-```mermaid
-flowchart LR
-    S0["Step 0<br/>Layered baseline<br/>measure"] --> S1["Step 1<br/>Atomic stock claim<br/>P2"]
-    S1 --> S2["Step 2<br/>Idempotency keys<br/>P4"]
-    S2 --> S3["Step 3<br/>Gate + FIFO queue<br/>P1 P4 P5"]
-    S3 --> S4["Step 4<br/>Event-driven<br/>reserve → queue → pay<br/>P3"]
-    S4 --> S5["Step 5<br/>Microkernel plug-ins<br/>P5 policies"]
-    S5 --> S6["Step 6<br/>Microservices split<br/>scale parts independently"]
-    S6 --> S7["Step 7<br/>Space-based hot path<br/>P1 removed"]
-```
-
-| Step | Pattern | Fix | Solves | ADR |
+| # | ADR | Status | Step | Solves |
 |---|---|---|---|---|
-| 0 | Layered | Simple build to measure against | — | [use-layered-architecture-as-baseline](adr/use-layered-architecture-as-baseline.md) |
-| 1 | Layered | Check-and-take in one atomic step | P2 | [claim-stock-atomically](adr/claim-stock-atomically.md) |
-| 2 | Layered | Unique request ID per purchase attempt | P4 | [use-idempotency-keys](adr/use-idempotency-keys.md) |
-| 3 | Layered + gate | Server-side FIFO queue / rate limiter | P1, P4, P5 | [control-entry-with-server-side-queue](adr/control-entry-with-server-side-queue.md) |
-| 4 | Event-Driven | Reserve → release DB → pay asynchronously; expired reservations return stock | P3, P1 | [release-database-before-payment](adr/release-database-before-payment.md), [use-event-driven-broker-topology](adr/use-event-driven-broker-topology.md) |
-| 5 | Microkernel | Allocation policy & payment provider as plug-ins | P5 (flexibility) | [use-microkernel-for-sale-rules](adr/use-microkernel-for-sale-rules.md) |
-| 6 | Microservices | Gate, Inventory, Order, Payment as separate services | Independent scaling | [split-into-microservices](adr/split-into-microservices.md) |
-| 7 | Space-Based | Hot stock in an in-memory data grid, DB written behind | P1 | [keep-hot-stock-in-memory-grid](adr/keep-hot-stock-in-memory-grid.md) |
-| ✓ | Hybrid | Final composition | P1–P5 | [combine-patterns-into-final-architecture](adr/combine-patterns-into-final-architecture.md) |
+| 1 | [Record architecture decisions](record-architecture-decisions.md) | Accepted | — | — |
+| 2 | [Use layered architecture as baseline](use-layered-architecture-as-baseline.md) | Accepted, partly superseded by 9 | 0 | Baseline to measure |
+| 3 | [Claim stock atomically](claim-stock-atomically.md) | Accepted, amended by 10 | 1 | P2 Overselling |
+| 4 | [Use idempotency keys](use-idempotency-keys.md) | Accepted | 2 | P4 Retry storms |
+| 5 | [Control entry with a server-side queue](control-entry-with-server-side-queue.md) | Accepted | 3 | P1, P4, P5 |
+| 6 | [Release the database before payment](release-database-before-payment.md) | Accepted | 4 | P3 Slow payments |
+| 7 | [Use event-driven broker topology](use-event-driven-broker-topology.md) | Accepted | 4 | P3, P1 |
+| 8 | [Use microkernel for sale rules](use-microkernel-for-sale-rules.md) | Accepted | 5 | P5 flexibility |
+| 9 | [Split into microservices](split-into-microservices.md) | Accepted | 6 | Independent scaling |
+| 10 | [Keep hot stock in an in-memory grid](keep-hot-stock-in-memory-grid.md) | Accepted | 7 | P1 DB jam |
+| 11 | [Combine patterns into the final architecture](combine-patterns-into-final-architecture.md) | Accepted | ✓ | P1–P5 |
 
-## Method — how we prove it
+## Status values
 
-1. **Build simple** — the layered baseline (Step 0).
-2. **Load-test** — 10,000 virtual users, 100 items, burst at T=0.
-3. **Find what breaks first** — DB locks? connection pool? payment delays? The data decides.
-4. **Change one thing** — apply the next step, record an ADR, test again.
+`Proposed` → `Accepted` → (`Deprecated` | `Superseded by …`). `Rejected` for options considered and not taken.
 
-Each step is committed separately so progress is visible in the commit history.
+## How to add an ADR
 
-## Suggested tech stack
+1. Copy the template below into a new file named with an imperative verb phrase (e.g. `choose-load-test-tool.md`).
+2. Fill in Context with the problem and the options considered, then Decision and Consequences.
+3. Add a row to the log above and commit the ADR with the code change it describes.
 
-Java 21 · Spring Boot · MySQL/PostgreSQL · Redis · RabbitMQ · k6 or Gatling for load tests. See the SRS §2.4 for constraints.
+```markdown
+# Title (imperative verb phrase)
+
+**Date:** YYYY-MM-DD
+
+## Status
+
+Proposed | Accepted | Rejected | Deprecated | Superseded by [x](x.md)
+
+## Context
+
+What is the issue that motivates this decision? What forces and options are in play?
+
+## Decision
+
+What is the change that we are proposing and/or doing?
+
+## Consequences
+
+What becomes easier or harder because of this change? Follow-up decisions?
+```
