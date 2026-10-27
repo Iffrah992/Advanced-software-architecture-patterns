@@ -93,22 +93,6 @@ flowchart TB
 - **Open layers** (optional). A shared services layer can be marked open so it can be bypassed. We keep all layers closed.
 - **Architecture sinkhole anti-pattern.** If most requests pass through layers that do nothing but forward them, the layering is costing latency for no benefit. Rule of thumb: about 80/20 is acceptable.
 
-### Pattern Example
-
-**Step 0 — baseline (what breaks).** The naive implementation does all five steps inside one transaction:
-
-```java
-@Transactional
-public Order buy(long saleId, long userId) {
-    Inventory inv = inventoryRepo.findById(saleId);        // check
-    if (inv.getAvailable() <= 0) throw new SoldOutException();
-    inv.setAvailable(inv.getAvailable() - 1);               // take  (separate step → P2)
-    Order order = orderRepo.save(new Order(saleId, userId));
-    paymentClient.charge(order);                            // ~5 s with DB connection held → P3
-    order.confirm();
-    return order;
-}
-```
 
 Load-testing this (SRS T-1, T-2, T-3) is expected to show: oversold units (P2), lock waits on the inventory row (P1), and the connection pool exhausted by the 5-second payment call (P3).
 
