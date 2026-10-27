@@ -9,7 +9,7 @@ Accepted
 
 ## Context
 
-Each pattern was applied one step at a time and validated by load testing. The pattern analysis (see [architecture-patterns.md](../docs/architecture-patterns.md#a-pattern-analysis-summary)) shows that no single pattern is strong everywhere:
+The pattern analysis (see [architecture-patterns.md](../docs/architecture-patterns.md#a-pattern-analysis-summary)) shows that no single pattern is strong everywhere:
 
 | Pattern | Strong at | Weak at |
 |---|---|---|
@@ -40,4 +40,4 @@ End-to-end flow: **Click → Gate (ticket, admission) → Reserve (atomic, in me
 
 - All five problems have a named fix, a requirement and a test (SRS Appendix B).
 - The design is more complex than any single pattern; complexity is concentrated where the load is (Gate, stock claim) and kept simple elsewhere.
-- Future work: compare FIFO with lottery using T-7; evaluate Hazelcast vs Redis for the grid; review this ADR after the final load-test report.
+- Future work: will compare FIFO with lottery using T-7; evaluate Hazelcast vs Redis for the grid
