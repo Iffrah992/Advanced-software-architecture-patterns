@@ -1,7 +1,7 @@
-# Architecture Patterns Applied to the Flash Sale
+# Architecture Patterns — Flash Sale Purchase System
 
-> Five architecture patterns, applied one step at a time to the five flash-sale problems.
-> Requirements: [`srs.md`](srs.md) · Decisions: [`/adr`](../adr/README.md)
+> Evaluation of five architecture patterns against the flash-sale bottlenecks, step by step, with reasons.
+> Requirements: [`srs.md`](srs.md) (v1.3) · Decisions: [`/adr`](../adr/README.md)
 
 ## Contents
 
@@ -17,45 +17,38 @@
 
 ## Introduction
 
-Without a deliberate architecture, a system tends to grow into a "big ball of mud": unclear roles, tight coupling, and no answer to *"how will this behave when 10,000 people click Buy at once?"*. An architecture pattern gives a known shape with known strengths and weaknesses, so we can choose on purpose.
-
-**The scenario.** 100 limited-edition shoes, 10,000 buyers, everyone clicks at 12:00. Every click triggers five steps:
+**Scenario.** 100 limited-edition items, about 10,000 buyers, most requests arriving at the start of the sale. Every purchase passes through five steps:
 
 ```mermaid
 flowchart LR
     A[Check stock] --> B[Reserve item] --> C[Create order] --> D[Take payment] --> E[Confirm]
 ```
 
-Easy for one buyer. At 10,000 in the same second, five problems appear:
+Easy for one buyer; at 10,000 in the same second, the bottlenecks from SRS Appendix B.3 appear:
 
-| ID | Problem | Root cause |
+| ID | Bottleneck | Cause |
 |---|---|---|
-| **P1** | Database jam | All requests lock the same stock record |
-| **P2** | Overselling | Check and take are two separate steps |
-| **P3** | Slow payments | DB connections held while the bank thinks (~5 s) |
-| **P4** | Retry storms | Slow pages → more clicks → more load |
-| **P5** | Fairness | No defined allocation rule |
+| B1 | Shared inventory contention | All requests update the same stock data |
+| B2 | Overselling | Check and claim are separate steps |
+| B3 | DB connection exhaustion | Connections stay busy while requests wait |
+| B4 | Slow payment dependency | External payment delays the whole path |
+| B5 | Retry amplification | Slow responses cause repeated requests |
+| B6 | Fairness | No defined rule for who gets the stock |
 
-**How each pattern is evaluated.** Every section ends with a *Pattern Analysis* that rates six characteristics, as in Richards' *Software Architecture Patterns*:
+**How patterns are rated.** Each section ends with a *Pattern Analysis* using six characteristics from Richards, *Software Architecture Patterns*: overall agility, ease of deployment, testability, performance, scalability, ease of development.
 
-| Characteristic | Question for the flash sale |
-|---|---|
-| Overall agility | How easily can we change it (e.g. a new allocation policy)? |
-| Ease of deployment | Can we redeploy one part right before the sale? |
-| Testability | Can we test correctness (no oversell) automatically? |
-| Performance | Can it answer 10,000 requests in about one second? |
-| Scalability | Does adding servers actually help? |
-| Ease of development | How hard is it for our team to build? |
+**Step-by-step method** (SRS §6.2): build the baseline → load-test → identify the bottleneck → change one architectural decision → test again.
 
-**Step-by-step approach.** We never apply everything at once. Following the project method — *build simple, load-test, find what breaks, change one thing* — each pattern adds one layer of fixes:
-
-| Step | Pattern | Adds | Problems solved |
-|---|---|---|---|
-| 0–3 | Layered | Baseline, atomic claim, idempotency, gate | P2, P4, P1 (partly), P5 |
-| 4 | Event-Driven | Reserve → release DB → pay asynchronously | P3, P1 |
-| 5 | Microkernel | Pluggable allocation policies & payment providers | P5 (flexibility) |
-| 6 | Microservices | Independent deployment and scaling | Scale per bottleneck |
-| 7 | Space-Based | Hot stock in memory; DB written behind | P1 (eliminated) |
+| Step | Change | Pattern | Bottlenecks | ADR |
+|---|---|---|---|---|
+| 0 | Layered monolith baseline, measured | Layered | measure all | 0003 |
+| 1 | Atomic stock claim | (any) | B2 | 0006 |
+| 2 | Idempotency keys | (any) | B5 | 0011 |
+| 3 | Admission / FIFO gate | Admission control | B1, B5, B6 | 0005 |
+| 4 | Short transaction, async payment via events | Event-Driven | B3, B4 | 0008, 0009 |
+| 5 | Inventory / Order / Payment services | Microservices | independent scaling | 0010 |
+| 6 | Hot stock in memory | Space-Based | B1, B3 | 0007 |
+| — | Pluggable sale rules (evaluated) | Microkernel | B6 | 0012 (rejected) |
 
 ---
 
@@ -63,7 +56,7 @@ Easy for one buyer. At 10,000 in the same second, five problems appear:
 
 ### Pattern Description
 
-The layered (n-tier) pattern organises components into horizontal layers, each with one role. The standard four are **presentation**, **business**, **persistence** and **database**. It is the de facto default for Java EE / Spring applications and is how most teams naturally start — which makes it our **Step 0 baseline**.
+Components are organised into horizontal layers, each with one role: **presentation**, **business**, **persistence**, **database**. It is the usual default for Spring Boot applications, which makes it the project's **baseline** (ADR-0003).
 
 ```mermaid
 flowchart TB
@@ -72,163 +65,162 @@ flowchart TB
     end
     subgraph Business
         S[PurchaseService]
-        G[GateService]
     end
     subgraph Persistence
         R[InventoryRepository / OrderRepository]
     end
     subgraph Database
-        DB[(MySQL / PostgreSQL)]
+        DB[(PostgreSQL)]
     end
-    C --> S
-    C --> G
-    S --> R
-    R --> DB
+    C --> S --> R --> DB
 ```
 
 ### Key Concepts
 
-- **Separation of concerns.** Each layer only does its own job: the controller does not write SQL, the repository does not decide who wins.
-- **Closed layers.** A request must pass through every layer in order (presentation → business → persistence → database). This gives **layers of isolation**: a change in one layer does not ripple into the others.
-- **Open layers** (optional). A shared services layer can be marked open so it can be bypassed. We keep all layers closed.
-- **Architecture sinkhole anti-pattern.** If most requests pass through layers that do nothing but forward them, the layering is costing latency for no benefit. Rule of thumb: about 80/20 is acceptable.
+- **Separation of concerns** — the controller does not write SQL; the repository does not decide who wins.
+- **Closed layers** — a request passes through every layer in order, giving *layers of isolation*: a change in one layer does not ripple into others.
+- **Open layers** — a layer may be marked as bypassable; the baseline keeps all layers closed.
+- **Architecture sinkhole anti-pattern** — requests that pass through layers doing nothing but forwarding them; acceptable at roughly 80/20.
 
+### Pattern Example
 
-Load-testing this (SRS T-1, T-2, T-3) is expected to show: oversold units (P2), lock waits on the inventory row (P1), and the connection pool exhausted by the 5-second payment call (P3).
+**Step 0 — baseline.** All five steps in one transaction:
 
-**Step 1 — atomic claim (solves P2).** Reason: the check and the take must be one indivisible operation. The database does it for us with a conditional update:
-
-```sql
-UPDATE inventory
-SET    available = available - 1
-WHERE  sale_id = ? AND available > 0;
--- 1 row updated → reserved; 0 rows → sold out
+```java
+@Transactional
+public Order buy(long saleId, long userId) {
+    Inventory inv = inventoryRepo.findById(saleId);          // check
+    if (inv.getAvailable() <= 0) throw new SoldOutException();
+    inv.setAvailable(inv.getAvailable() - 1);                 // claim — separate step (B2)
+    Order order = orderRepo.save(new Order(saleId, userId));
+    paymentClient.charge(order);                              // slow call, connection held (B3, B4)
+    order.confirm();
+    return order;
+}
 ```
 
-Plus `CHECK (available >= 0)` as a safety net. → [ADR: claim-stock-atomically](../adr/claim-stock-atomically.md)
+Running T-1 to T-3 on this version is expected to show lock waits on the stock row (B1), overselling (B2), and pool exhaustion while waiting for payment (B3, B4). The baseline records FR-15–FR-18 metrics so every later step can be compared.
 
-**Step 2 — idempotency key (solves P4 duplicates).** Reason: a repeated click must be recognised, not processed again. The client sends `Idempotency-Key`; the business layer stores key → result in a table with the key as primary key, and returns the stored result for repeats. → [ADR: use-idempotency-keys](../adr/use-idempotency-keys.md)
+**Step 1 — atomic claim (B2).** *Reason:* check and claim must be one indivisible operation.
 
-**Step 3 — gate in front of the business layer (solves P1 partly, P4, P5).** Reason: even with an atomic update, 10,000 requests still queue on one row. A `GateService` issues server-side tickets with an atomic counter (Redis `INCR`), lets only `stock + 20 %` tickets proceed, and answers everyone else immediately with *Sold out* / waitlist — without touching the DB. → [ADR: control-entry-with-server-side-queue](../adr/control-entry-with-server-side-queue.md)
+```sql
+UPDATE inventory SET available = available - 1
+WHERE sale_id = :saleId AND available > 0;   -- 1 row → reserved, 0 rows → sold out
+```
 
-**What is still broken after Step 3:** the payment call still sits inside the request, holding a DB connection for ~5 s (P3). Layering cannot fix this: the request–response flow through closed layers is inherently synchronous. → move to Event-Driven.
+→ [ADR-0006](../adr/claim-stock-atomically.md)
+
+**Step 2 — idempotency key (B5).** *Reason:* a repeated click must return the first result, not create a second order or charge. → [ADR-0011](../adr/use-idempotency-keys.md)
+
+**Step 3 — admission/FIFO gate (B1, B5, B6).** *Reason:* only about 100 buyers can succeed, so only a bounded number of requests should reach the stock step; the rest get *waiting* or *sold out* quickly. Server-side tickets define the order (C-4). → [ADR-0005](../adr/control-entry-with-server-side-queue.md)
+
+**Still broken:** the payment call is still inside the synchronous request (B3, B4). Closed layers with a request–response flow cannot remove this wait.
 
 ### Considerations
 
-- A solid starting point when unsure — easy to build and reason about.
-- Tends to become a **monolith**: one deployable unit, so all parts scale together even if only the stock-claim step is hot.
-- Synchronous request flow means the slowest dependency (payment) dictates latency.
-- Watch for the sinkhole anti-pattern in simple read requests (e.g. "get sale status").
+- A sound starting point; easy to build, understand and test.
+- Tends to become a monolith: one deployable unit, scaled as a whole.
+- The slowest dependency (payment) sets the response time of the whole request.
 
 ### Pattern Analysis
 
-| Characteristic | Rating | Flash-sale reasoning |
+| Characteristic | Rating | Reason in this project |
 |---|---|---|
-| Overall agility | **Low** | Changing the allocation rule means redeploying the whole monolith |
-| Ease of deployment | **Low** | One unit; risky to redeploy just before 12:00 |
-| Testability | **High** | Layers can be mocked; the oversell test is easy to write |
-| Performance | **Low** | Every request crosses all layers synchronously; payment blocks |
-| Scalability | **Low** | More instances all contend for the same stock row and DB pool |
-| Ease of development | **High** | Familiar Spring Boot structure |
+| Overall agility | Low | Any change redeploys the whole application |
+| Ease of deployment | Low | One unit; risky to redeploy before a sale |
+| Testability | High | Layers can be mocked; oversell test is easy |
+| Performance | Low | Synchronous flow; payment blocks the request |
+| Scalability | Low | More instances still meet at one stock row and one DB pool |
+| Ease of development | High | Standard Spring Boot structure |
 
-**Verdict:** correct after Steps 1–3, but cannot meet PR-5/PR-6 (pool usage, connection hold time). Kept as the **internal structure of each service** later on.
+**Verdict:** baseline only, and the internal structure of each service later.
 
 ---
 
 ## 2. Event-Driven Architecture
 
-The event-driven pattern is made of decoupled, single-purpose **event processors** that receive and process events asynchronously. It suits bursty, high-throughput workloads — exactly a flash sale. It has two main topologies.
+Decoupled, single-purpose event processors receive and process events asynchronously. Well suited to bursty workloads. Two topologies:
 
 ### Mediator Topology
 
-A central **event mediator** receives an initial event and orchestrates the processing steps by sending processing events to **event channels**, which **event processors** consume.
+A central **event mediator** receives the initial event and orchestrates each step by sending events to channels that processors consume.
 
 ```mermaid
 flowchart LR
     Q[Event queue] --> M[Checkout mediator]
-    M -->|reserve| C1[Inventory channel] --> P1[Inventory processor]
-    M -->|create order| C2[Order channel] --> P2[Order processor]
-    M -->|charge| C3[Payment channel] --> P3[Payment processor]
-    M -->|confirm or release| C4[Notification channel] --> P4[Notification processor]
+    M --> C1[Inventory channel] --> P1[Inventory processor]
+    M --> C2[Order channel] --> P2[Order processor]
+    M --> C3[Payment channel] --> P3[Payment processor]
 ```
 
-**Applied to the flash sale:** the mediator would know the full checkout workflow and handle compensation centrally (payment failed → tell inventory to release).
-
-**Why we did not choose it for the purchase path:** every one of the 10,000 purchases would pass through the mediator, making it a new central bottleneck and a single point of failure — the same shape as P1, just moved. Our workflow is also short and linear, so we do not need complex orchestration.
+**For the flash sale:** every purchase would pass through the mediator — a new central bottleneck and single point of failure. The flow is short and linear, so orchestration is not needed. **Not chosen.**
 
 ### Broker Topology
 
-There is no central mediator. Events flow in a **chain** through a lightweight **message broker** (RabbitMQ). Each processor does its step and publishes a new event announcing what it did.
+No central mediator. Each processor does its step and publishes a new event through a lightweight broker.
 
 ```mermaid
 flowchart LR
-    G[Gate] -- PurchaseAdmitted --> INV[Inventory processor]
-    INV -- StockReserved --> ORD[Order processor]
-    INV -- SoldOut --> NOT[Notification processor]
-    ORD -- OrderCreated --> PAY[Payment workers]
-    PAY -- PaymentSucceeded --> ORD
-    PAY -- PaymentFailed --> INV
-    TTL[Reservation expiry scheduler] -- ReservationExpired --> INV
-    INV -- StockReleased --> G
-    ORD -- OrderConfirmed --> NOT
+    I[Inventory] -- StockReserved --> O[Order]
+    O -- OrderCreated --> P[Payment]
+    P -- PaymentSucceeded --> O
+    P -- PaymentFailed --> O
+    O -- OrderFailed --> I
+    X[Expiry] -- ReservationExpired --> I
+    I -- StockReleased --> G[Gate]
 ```
 
-**Step 4 — reserve → release DB → pay (solves P3, helps P1).**
+**Step 4 — short transaction, then async payment (B3, B4).**
 
-1. **Reserve.** Inventory processor runs the atomic claim (Step 1), writes the reservation with `expires_at = now + 5 min`, and writes a `StockReserved` row to the **outbox** — all in one short transaction (≈ milliseconds). *Reason:* the DB connection is held only for this tiny step ("DB busy only here").
-2. **Release the DB.** The transaction commits *before* any payment call. *Reason:* the connection returns to the pool immediately, so new buyers can always start (PR-5, PR-6).
-3. **Queue.** An outbox relay publishes the event; a **bounded pool of payment workers** consumes it at a steady rate. *Reason:* "process gradually" — the bank sees a controlled flow, not a 10,000-request spike.
-4. **Pay.** The worker calls the gateway with the order ID as idempotency key.
-5. **Confirm or release.** `PaymentSucceeded` → order `CONFIRMED`. `PaymentFailed` or `ReservationExpired` → inventory adds the unit back (`StockReleased`) → the gate can admit the next ticket from the waitlist. *Reason:* "Payment failed → item back on sale".
-
-The buyer's page polls the status endpoint (UI-2), so no HTTP connection is held while waiting.
+1. **Reserve + create order** in one short transaction, together with an outbox event. *Reason:* the DB connection is held only for milliseconds (FR-10).
+2. **Commit and release the connection** before any payment call. *Reason:* new buyers can always start.
+3. **Publish** `StockReserved` / `OrderCreated` through the broker. *Reason:* payment proceeds at a steady, bounded rate.
+4. **Pay** with the order ID as payment idempotency key.
+5. **Confirm or release:** success → `CONFIRMED` (FR-11); failure, timeout or expiry → `FAILED` and the unit returns to stock (FR-8, FR-12, BR-4).
 
 ```mermaid
 sequenceDiagram
     participant B as Buyer
     participant G as Gate
     participant I as Inventory
-    participant DB as Database
-    participant MQ as RabbitMQ
-    participant P as Payment worker
-    participant Bank
-    B->>G: POST /purchase (Idempotency-Key)
-    G-->>B: 202 Accepted, ticket 57
-    G->>MQ: PurchaseAdmitted
-    MQ->>I: PurchaseAdmitted
-    I->>DB: atomic claim + reservation + outbox (one short tx)
-    DB-->>I: committed — connection released
-    I->>MQ: StockReserved
-    MQ->>P: OrderCreated
-    P->>Bank: charge(orderId as idempotency key)
-    Bank-->>P: success (~5 s later)
-    P->>MQ: PaymentSucceeded
-    B->>G: GET /purchases/57
-    G-->>B: Order confirmed
+    participant DB as PostgreSQL
+    participant E as Event broker
+    participant P as Payment
+    B->>G: POST purchase (request ID)
+    G-->>B: accepted, ticket issued
+    G->>I: admitted ticket
+    I->>DB: claim + reservation + order + outbox (short tx)
+    DB-->>I: committed, connection released
+    I->>E: StockReserved
+    E->>P: OrderCreated
+    P->>P: call payment service (slow)
+    P->>E: PaymentSucceeded
+    B->>G: GET status
+    G-->>B: confirmed
 ```
 
-→ [ADR: release-database-before-payment](../adr/release-database-before-payment.md) · [ADR: use-event-driven-broker-topology](../adr/use-event-driven-broker-topology.md)
+→ [ADR-0008](../adr/release-database-before-payment.md) · [ADR-0009](../adr/use-event-driven-broker-topology.md)
 
 ### Considerations
 
-- **Asynchronous complexity.** The buyer does not get the final result in the same HTTP response — needs a status endpoint and a waiting UI.
-- **No distributed transaction across processors.** We use compensating events (`StockReleased`) instead of rollback, and the **transactional outbox** so a state change and its event can never diverge.
-- **At-least-once delivery.** Every consumer must be idempotent (FR-16), e.g. "release stock" checks that the reservation is still `ACTIVE` before adding the unit back.
-- **Contracts.** Event schemas must be versioned and agreed between processors.
-- **Error handling.** A processor failure must not lose the event: dead-letter queues plus alerts.
+- The buyer does not get the final result in the first response; a status endpoint is needed (CI-3, UI-2).
+- No distributed transaction: failures are handled by compensating events.
+- The **transactional outbox** keeps state changes and events consistent.
+- At-least-once delivery means consumers must be idempotent (FR-14).
+- Event schemas must be agreed and versioned.
 
 ### Pattern Analysis
 
-| Characteristic | Rating | Flash-sale reasoning |
+| Characteristic | Rating | Reason in this project |
 |---|---|---|
-| Overall agility | **High** | Processors are independent; adding a notification step touches nothing else |
-| Ease of deployment | **High** | Processors deploy separately (more so in broker topology) |
-| Testability | **Low** | Async flows and failure paths (payment fails after TTL) are hard to test end-to-end |
-| Performance | **High** | DB held for milliseconds; work proceeds in parallel |
-| Scalability | **High** | Payment workers scale independently of inventory |
-| Ease of development | **Low** | Outbox, idempotent consumers, compensations and async UI add effort |
+| Overall agility | High | Processors change independently |
+| Ease of deployment | High | Processors deploy separately |
+| Testability | Low | Async and failure orderings are hard to test end-to-end |
+| Performance | High | DB held only briefly; work in parallel |
+| Scalability | High | Payment consumers scale apart from inventory |
+| Ease of development | Low | Outbox, idempotent consumers, compensation, async UI |
 
-**Verdict:** the broker topology removes P3 and smooths load (P1). It does **not** by itself make the stock record less hot — that comes in Step 7.
+**Verdict:** **selected** (broker topology) for everything after the stock claim.
 
 ---
 
@@ -236,81 +228,52 @@ sequenceDiagram
 
 ### Pattern Description
 
-The microkernel (plug-in) pattern has two parts: a **core system** containing the minimal functionality that never changes, and **plug-in modules** that add or vary features. Plug-ins are independent of each other and connect to the core through a **registry** and a well-defined **contract**.
-
-For the flash sale, the core is the purchase engine that must always behave the same (ticketing, atomic claim, reservation lifecycle). What changes from sale to sale — *who gets the shoes* and *how they pay* — becomes plug-ins.
+A **core system** with minimal, stable functionality plus independent **plug-in modules** connected through a contract and a registry. For the flash sale the core would be ticketing, claim and reservation lifecycle; plug-ins would be allocation policies, per-user rules and payment adapters.
 
 ```mermaid
 flowchart TB
-    subgraph Core["Core sale engine (fixed)"]
+    subgraph Core["Core sale engine"]
         T[Ticketing]
         A[Atomic claim]
         L[Reservation lifecycle]
         REG[Plug-in registry]
     end
-    REG --- F[FIFO policy - default]
+    REG --- F[FIFO policy]
     REG --- R[Randomized queue policy]
     REG --- LO[Lottery policy]
-    REG --- PS[Stripe adapter]
-    REG --- PP[PayPal adapter]
-    REG --- AB[Anti-bot check]
-    REG --- UL[Per-user limit rule]
+    REG --- PA[Payment adapter]
 ```
 
 ### Pattern Examples
 
-**Step 5 — pluggable allocation policy (supports P5).** Reason: the slides propose strict FIFO now, but list randomized queues and lottery allocation as further study "if fairness requirements change". Hard-coding FIFO would mean rewriting the core each time.
+A pluggable allocation contract:
 
 ```java
-public interface AllocationPolicy {           // the plug-in contract
-    String name();                            // "FIFO", "LOTTERY", ...
+public interface AllocationPolicy {
     List<Ticket> selectWinners(List<Ticket> entrants, int stock);
-}
-
-@Component
-class FifoPolicy implements AllocationPolicy {
-    public String name() { return "FIFO"; }
-    public List<Ticket> selectWinners(List<Ticket> t, int stock) {
-        return t.stream().sorted(comparing(Ticket::number)).limit(stock).toList();
-    }
-}
-
-@Component
-class LotteryPolicy implements AllocationPolicy {
-    public String name() { return "LOTTERY"; }
-    public List<Ticket> selectWinners(List<Ticket> t, int stock) {
-        List<Ticket> copy = new ArrayList<>(t);
-        Collections.shuffle(copy, new SecureRandom());   // seed logged for audit
-        return copy.subList(0, Math.min(stock, copy.size()));
-    }
 }
 ```
 
-The registry is simply Spring collecting all `AllocationPolicy` beans into a `Map<String, AllocationPolicy>`; the sale configuration (`policy = "LOTTERY"`) picks one. The same contract approach is used for `PaymentProvider` adapters and `EntryCheck` rules (anti-bot, per-user limit).
-
-A lottery policy also changes *when* winners are chosen: entries are collected during a short window (e.g. 60 s), then winners are drawn — which removes any advantage from network speed entirely.
-
-→ [ADR: use-microkernel-for-sale-rules](../adr/use-microkernel-for-sale-rules.md)
+FIFO would sort by ticket number; a lottery policy would shuffle entries collected during a short window, which removes any advantage from network speed.
 
 ### Considerations
 
-- The **contract** between core and plug-ins must be stable; versioning matters once several plug-ins exist.
-- Plug-ins must not depend on each other.
-- The core is usually a single deployable — the microkernel pattern alone **does not scale** a hot path. It is therefore used *inside* the Gate and Payment components, not as the overall system architecture.
-- Policies must be testable in isolation, and the active one is frozen when the sale starts (FR-22).
+- A stable contract between core and plug-ins needs careful design.
+- The core is still one deployable: the pattern does **not** reduce B1 or B3.
+- The SRS requires *a defined* allocation rule (§5.4), not several interchangeable ones, and C-7 fixes the target patterns.
 
 ### Pattern Analysis
 
-| Characteristic | Rating | Flash-sale reasoning |
+| Characteristic | Rating | Reason in this project |
 |---|---|---|
-| Overall agility | **High** | New policy = new plug-in; core untouched |
-| Ease of deployment | **High** | Plug-ins can be added without redesigning the core |
-| Testability | **High** | Each policy is a pure function, unit-testable |
-| Performance | **High** | Can be kept lean; no remote calls between core and plug-in |
-| Scalability | **Low** | The core is still one unit; does not address P1 |
-| Ease of development | **Low** | Designing a good, stable contract takes care |
+| Overall agility | High | New policy without touching the core |
+| Ease of deployment | High | Plug-ins added independently |
+| Testability | High | Each policy is unit-testable |
+| Performance | High | In-process calls |
+| Scalability | Low | Does not address the hot path |
+| Ease of development | Low | Contract and registry design effort |
 
-**Verdict:** ideal for **variability** (fairness policies, payment providers), not for load. Used as an internal pattern.
+**Verdict:** **evaluated, not selected** — [ADR-0012](../adr/use-microkernel-for-sale-rules.md). The allocation rule is kept behind one interface so a future policy can be added.
 
 ---
 
@@ -318,85 +281,69 @@ A lottery policy also changes *when* winners are chosen: entries are collected d
 
 ### Pattern Description
 
-The application is split into **separately deployed units**, each a **service component** with one business capability, its own data, and communication over the network. It evolved from two directions: monoliths built in layers that became hard to deploy, and service-oriented systems that became too heavy.
-
-For the flash sale, the bottlenecks sit in different places (entry, stock, payment), so being able to **scale and deploy each part independently** is the main benefit.
+The application is split into **separately deployed service components**, each owning one capability and its data, communicating over the network. In the flash sale the bottlenecks sit in different places (entry, stock, payment), so independent scaling is the main benefit.
 
 ### Pattern Topologies
 
-| Topology | Description | Flash-sale fit |
+| Topology | Description | Use in this project |
 |---|---|---|
-| **API REST-based** | Fine-grained services exposed through REST APIs, often behind an API gateway | Good for the buyer-facing edge (purchase, status) |
-| **Application REST-based** | A traditional UI calls coarse-grained services over REST | Not needed; we have a single purchase UI |
-| **Centralized messaging** | Services communicate through a lightweight message broker instead of direct calls | Best for the internal purchase flow — reuses the event-driven design |
-
-**Chosen: API gateway at the edge + centralized messaging (RabbitMQ) inside.**
+| API REST-based | Fine-grained services exposed through REST | Buyer-facing purchase and status endpoints |
+| Application REST-based | UI calls coarse-grained services | Not needed |
+| Centralized messaging | Services communicate through a broker | Internal flow (reuses Section 2) |
 
 ```mermaid
 flowchart LR
-    B[Buyers] --> GW[API gateway]
-    GW --> GATE[Gate service]
-    GW --> STATUS[Status endpoint on Order service]
-    GATE --> REDIS[(Redis - tickets)]
-    GATE --> MQ{{RabbitMQ}}
-    MQ --> INV[Inventory service]
-    INV --> INVDB[(Inventory DB)]
-    INV --> MQ
-    MQ --> ORD[Order service]
-    ORD --> ORDDB[(Order DB)]
-    ORD --> MQ
-    MQ --> PAY[Payment service]
-    PAY --> BANK[Payment gateway]
-    PAY --> MQ
-    MQ --> NOTIF[Notification service]
+    B[Buyers] --> G[Admission / FIFO Gate]
+    G --> INV[Inventory Service]
+    INV --> MEM[(In-memory stock)]
+    INV --> E{{Event broker}}
+    E --> ORD[Order Service]
+    E --> PAY[Payment Service]
+    PAY --> E
+    ORD --> DB[(PostgreSQL)]
+    PAY --> DB
+    INV --> DB
 ```
 
-**Step 6 — split along bottleneck lines (independent scaling).**
+**Step 5 — split along bottleneck lines.**
 
-| Service | Owns | Scales by | Reason it is separate |
-|---|---|---|---|
-| Gate | Tickets, rate limits, waitlist | Many instances for the 12:00 burst | Takes the full crowd; must never touch the DB |
-| Inventory | Stock, reservations | Few instances (single writer per SKU) | Correctness-critical; small, isolated code |
-| Order | Orders, status for polling | Moderate | Most read traffic (status polling) |
-| Payment | Payment attempts | Bounded worker pool | Rate is limited by the bank, not by us |
-| Notification | Messages to buyers | Any | Failure must not block purchases (AV-2) |
+| Service | Responsibility | Why separate |
+|---|---|---|
+| Inventory | Claim, reservations, release | Correctness-critical; scaled for the burst |
+| Order | Order states, buyer status | Steady load plus status reads |
+| Payment | Payment requests and results | Rate limited by the external service (B4) |
 
-Each service keeps a **layered** internal structure (controller → service → repository).
-
-→ [ADR: split-into-microservices](../adr/split-into-microservices.md)
+The gate is a separately scalable component in front of Inventory. → [ADR-0010](../adr/split-into-microservices.md)
 
 ### Avoid Dependencies and Orchestration
 
-The biggest risk is rebuilding a distributed monolith: Order calls Inventory calls Payment synchronously, so one slow service blocks all of them — P3 again, now across the network.
+The main risk is a *distributed monolith*: Order calls Inventory calls Payment synchronously, so one slow service blocks all of them — B4 across the network. Rules:
 
-Rules we apply:
-
-1. **No synchronous call chains** on the purchase path (DC-2). Services react to events instead of calling each other.
-2. **Database per service.** Inventory never reads the Order DB. Data needed elsewhere is carried in events (e.g. `StockReserved` includes `price` and `userId`).
-3. **Choreography, not orchestration.** No service tells another what to do step by step; each reacts to facts ("stock was reserved"). This also avoids the mediator bottleneck from Section 2.
-4. **Accept small duplication** (a price snapshot stored in the order) rather than a shared library or shared table that couples services.
-5. **Compensating actions** instead of distributed transactions: payment failed → `PaymentFailed` → Inventory releases the unit.
+1. No synchronous call chains on the purchase path; services react to events.
+2. Each service owns its PostgreSQL schema; no shared tables.
+3. Choreography, not a central orchestrator (avoids the mediator bottleneck).
+4. Needed data travels inside events, accepting small duplication instead of coupling.
+5. Failures are handled by compensating events, not distributed transactions.
 
 ### Considerations
 
-- **Distributed system costs:** network latency, partial failures, timeouts, and the need for tracing (OB-1 correlation ID).
-- **Eventual consistency:** the status page may lag the real state by a moment; the UI must handle "processing".
-- **Operational overhead:** more deployables, more monitoring — significant for a student team; we mitigate with Docker Compose and one shared observability stack.
-- **Contract testing** between services is required to catch event-schema breaks.
-- Service granularity: too fine → chatty and slow; we stop at five services.
+- Network latency, partial failures and more deployables.
+- Eventual consistency: the status may briefly show *processing*.
+- Event contracts need tests; logs need a correlation ID.
+- Granularity is kept to three services plus the gate.
 
 ### Pattern Analysis
 
-| Characteristic | Rating | Flash-sale reasoning |
+| Characteristic | Rating | Reason in this project |
 |---|---|---|
-| Overall agility | **High** | Change the payment service without touching the gate |
-| Ease of deployment | **High** | Each service deploys alone; Gate can be scaled up before 12:00 |
-| Testability | **High** | Small services with clear boundaries are easy to test individually |
-| Performance | **Low** | Network hops add latency compared with in-process calls |
-| Scalability | **High** | Gate scales out to absorb the burst; Payment stays bounded |
-| Ease of development | **High** | Small codebases per capability (but higher ops effort) |
+| Overall agility | High | Change Payment without touching Inventory |
+| Ease of deployment | High | Services deploy and scale alone |
+| Testability | High | Small services with clear boundaries |
+| Performance | Low | Network hops add latency |
+| Scalability | High | Scale the burst-facing parts only |
+| Ease of development | High | Small codebases (higher operational effort) |
 
-**Verdict:** gives independent scaling and isolation, but the **Inventory service is still bound to one hot DB row** — the last part of P1.
+**Verdict:** **selected** for deployment and scaling boundaries. The Inventory Service still meets one stock value — addressed next.
 
 ---
 
@@ -404,78 +351,74 @@ Rules we apply:
 
 ### Pattern Description
 
-Space-based architecture targets **extreme and variable concurrency** — the exact flash-sale situation. The insight: the central database is the final bottleneck, so remove it from the transactional path. Application data is held in a **replicated in-memory data grid** inside **processing units**, and the database is updated **asynchronously** afterwards. The name comes from *tuple space* — shared memory between distributed processes.
+Designed for extreme, variable concurrency: the central database is removed from the high-concurrency transactional path. Data is held in a replicated **in-memory data grid** inside **processing units**, and the database is updated **asynchronously**.
 
-Two main parts:
+Parts of the **virtualized middleware**:
 
-- **Processing unit** — application code plus its in-memory data (and optionally replication to peers).
-- **Virtualized middleware** — manages the units:
-  - **Messaging grid**: receives requests and routes them to a processing unit.
-  - **Data grid**: keeps in-memory data consistent across units.
-  - **Processing grid**: coordinates requests that need several units.
-  - **Deployment manager**: starts and stops units as load changes.
+- **Messaging grid** — receives requests and routes them to processing units;
+- **Data grid** — keeps in-memory data consistent between units;
+- **Processing grid** — coordinates requests that need several units;
+- **Deployment manager** — starts and stops units as load changes.
 
 ```mermaid
 flowchart TB
-    B[10,000 buyers] --> MG[Messaging grid / API gateway]
-    MG --> PU1[Processing unit 1<br/>gate + claim logic]
-    MG --> PU2[Processing unit 2<br/>gate + claim logic]
-    MG --> PU3[Processing unit N<br/>gate + claim logic]
-    PU1 <--> DG[(In-memory data grid<br/>Redis: stock, tickets, idempotency)]
+    B[Buyers] --> MG[Messaging grid: gate / load balancer]
+    MG --> PU1[Processing unit 1]
+    MG --> PU2[Processing unit 2]
+    MG --> PU3[Processing unit N]
+    PU1 <--> DG[(In-memory data grid: stock, tickets, request IDs)]
     PU2 <--> DG
     PU3 <--> DG
-    DG -- write-behind via events --> W[Data writer]
-    W --> DB[(Relational DB<br/>system of record)]
-    DM[Deployment manager<br/>auto-scale before 12:00] -.-> PU1
-    DM -.-> PU3
+    DG -- events --> W[Order / Inventory consumers]
+    W --> DB[(PostgreSQL)]
 ```
 
 ### Pattern Dynamics
 
-**Step 7 — move the hot stock into memory (eliminates P1).**
+**Step 6 — hot stock in memory (B1, B3).**
 
-1. **Before the sale (warm-up).** Stock is loaded from the DB into the data grid (`stock:{saleId} = 100`). The deployment manager scales processing units up ahead of 12:00. *Reason:* the burst arrives too fast to scale reactively.
-2. **Request arrives.** The messaging grid routes it to any processing unit — all are equal; none touch the DB.
-3. **Atomic claim in memory.** One Lua script runs atomically in Redis (single-threaded per key), so "check + take" cannot interleave (P2 stays solved):
+1. **Warm-up.** Before the sale, the initial quantity is loaded from PostgreSQL into the in-memory layer. Processing units are started ahead of the burst. *Reason:* the burst is too fast for reactive scaling.
+2. **Route.** Each admitted request goes to any processing unit; none needs a database connection to claim stock.
+3. **Atomic claim in memory.** Check limit + check stock + decrement + record buyer as one operation (ADR-0006). Example with the proposed technology (Redis Lua, ADR-0013):
 
    ```lua
    -- KEYS[1]=stock:{sale}  KEYS[2]=buyers:{sale}  ARGV[1]=userId
-   if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then return -2 end  -- per-user limit
+   if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then return -2 end
    local s = tonumber(redis.call('GET', KEYS[1]))
-   if s <= 0 then return -1 end                                         -- sold out
+   if s <= 0 then return -1 end
    redis.call('DECR', KEYS[1])
    redis.call('SADD', KEYS[2], ARGV[1])
-   return s - 1                                                         -- remaining
+   return s - 1
    ```
 
-   *Reason:* an in-memory atomic operation takes microseconds instead of a row lock taking milliseconds, and it is not limited by the DB connection pool.
-4. **Write-behind.** The unit publishes `StockReserved`; a **data writer** persists reservations and orders to the DB at a steady rate. *Reason:* the DB becomes a durable record, not the bottleneck.
-5. **Release.** `PaymentFailed` / `ReservationExpired` → `INCR stock` (guarded so it happens once per reservation) → the next waitlisted ticket is admitted.
-6. **After the sale.** Reconciliation (FR-24) checks grid totals against DB totals.
+   *Reason:* an in-memory atomic operation avoids row locks and the DB connection pool.
+4. **Asynchronous persistence.** Successful claims produce events; reservations and orders are written to PostgreSQL by consumers. PostgreSQL stays the system of record.
+5. **Release.** Failed or expired reservations return the unit to memory, exactly once.
+6. **Reconciliation.** After each run, in-memory totals, PostgreSQL totals and initial stock are compared (FR-18).
 
-**Data collisions.** In a classic space-based system with several replicated caches, two units can update the same item in different replicas at once. For a single stock counter this is unacceptable, so the stock key has **one owner** (one Redis primary for that key, with replicas only for failover). Ticket numbers use the same single-owner `INCR`, which also keeps FIFO order consistent (P5).
+**Data collisions.** With several replicas accepting writes, two units can update the same item in different replicas at once. For a stock counter this is not acceptable, so each stock key has **one primary owner**, with replicas only for failover.
 
-→ [ADR: keep-hot-stock-in-memory-grid](../adr/keep-hot-stock-in-memory-grid.md)
+→ [ADR-0007](../adr/keep-hot-stock-in-memory-grid.md) · [ADR-0013](../adr/choose-in-memory-data-grid-technology.md)
 
 ### Considerations
 
-- **Durability risk:** data in memory can be lost on a crash. Mitigation: Redis AOF persistence (`appendfsync everysec`) plus replicas, outbox-style events, and reconciliation.
-- **Not for large relational data** or complex queries — only the small hot data set (stock counter, tickets, idempotency keys).
-- **Testing at scale** is hard and expensive: realistic burst tests need dedicated infrastructure.
-- **Complexity and cost:** grids, replication and write-behind add moving parts; justified only for the hot path.
+- In-memory data can be lost on failure: replication, persistence settings, durable events and reconciliation are needed.
+- Only small hot data belongs in memory; relational data stays in PostgreSQL.
+- Realistic burst and failover tests are hard to reproduce.
+- More moving parts; justified only on the hot path.
 
 ### Pattern Analysis
 
-| Characteristic | Rating | Flash-sale reasoning |
+| Characteristic | Rating | Reason in this project |
 |---|---|---|
-| Overall agility | **High** | Processing units are small and independently deployable |
-| Ease of deployment | **High** | Units are added/removed dynamically |
-| Testability | **Low** | Realistic burst and failover tests are hard to reproduce |
-| Performance | **High** | In-memory claim; no DB on the request path |
-| Scalability | **High** | Processing units scale out; no single DB row to wait on |
-| Ease of development | **Low** | Grid, replication, write-behind and reconciliation are complex |
+| Overall agility | High | Processing units are small and independent |
+| Ease of deployment | High | Units added and removed dynamically |
+| Testability | Low | Burst and failover tests are hard |
+| Performance | High | No database on the claim path |
+| Scalability | High | No single DB row to wait on |
+| Ease of development | Low | Grid, replication, async persistence |
 
-**Verdict:** the only pattern that truly removes P1. Used **only for the hot path** (Gate + stock claim).
+**Verdict:** **selected** for the hot inventory state only.
 
 ---
 
@@ -485,57 +428,50 @@ flowchart TB
 
 | Characteristic | Layered | Event-Driven | Microkernel | Microservices | Space-Based |
 |---|---|---|---|---|---|
-| Overall agility | 👎 Low | 👍 High | 👍 High | 👍 High | 👍 High |
-| Ease of deployment | 👎 Low | 👍 High | 👍 High | 👍 High | 👍 High |
-| Testability | 👍 High | 👎 Low | 👍 High | 👍 High | 👎 Low |
-| Performance | 👎 Low | 👍 High | 👍 High | 👎 Low | 👍 High |
-| Scalability | 👎 Low | 👍 High | 👎 Low | 👍 High | 👍 High |
-| Ease of development | 👍 High | 👎 Low | 👎 Low | 👍 High | 👎 Low |
+| Overall agility | Low | High | High | High | High |
+| Ease of deployment | Low | High | High | High | High |
+| Testability | High | Low | High | High | Low |
+| Performance | Low | High | High | Low | High |
+| Scalability | Low | High | Low | High | High |
+| Ease of development | High | Low | Low | High | Low |
 
-### Which problem each pattern solves
+### Bottleneck coverage
 
-| Problem | Layered | Event-Driven | Microkernel | Microservices | Space-Based |
+| Bottleneck | Layered | Event-Driven | Microkernel | Microservices | Space-Based |
 |---|---|---|---|---|---|
-| P1 DB jam | ◐ gate reduces load | ◐ steady processing | ✗ | ◐ isolates the hot part | ✔ removes DB from path |
-| P2 Overselling | ✔ atomic SQL update | ✔ preserved via outbox | ✗ | ✔ inventory single owner | ✔ atomic Lua script |
-| P3 Slow payments | ✗ sync request | ✔ reserve → release → pay | ✗ | ✔ payment isolated | ◐ |
-| P4 Retry storms | ✔ idempotency keys | ✔ idempotent consumers | ✗ | ◐ | ✔ keys in memory, fast answers |
-| P5 Fairness | ✔ server-side FIFO | ◐ | ✔ pluggable policies | ◐ | ✔ single-owner ticket counter |
+| B1 Inventory contention | ✗ | ◐ | ✗ | ◐ | ✔ |
+| B2 Overselling | ✔ atomic SQL | ✔ | ✗ | ✔ | ✔ atomic in memory |
+| B3 Connection exhaustion | ✗ | ✔ | ✗ | ◐ | ✔ |
+| B4 Slow payment | ✗ | ✔ | ✗ | ✔ | ◐ |
+| B5 Retry amplification | ◐ with idempotency | ✔ idempotent consumers | ✗ | ◐ | ✔ fast answers |
+| B6 Fairness | ◐ with gate | ◐ | ✔ pluggable policies | ◐ | ✔ single-owner ticket counter |
 
-✔ solves · ◐ helps · ✗ does not address
+✔ addresses · ◐ helps · ✗ does not address. Admission gate and idempotency are cross-cutting and apply to every option.
 
-### Final composition
+### Selected architecture
 
-No single pattern scores well everywhere, so the final design **combines** them, each where its strength matters:
+No single pattern scores well everywhere, so the target combines them (ADR-0004, SRS C-7, C-8):
 
 ```mermaid
 flowchart LR
-    subgraph SB["Space-Based hot path"]
-        GATE["Gate service<br/>microkernel: AllocationPolicy"]
-        GRID[(Redis grid<br/>stock · tickets · idem keys)]
-        GATE <--> GRID
-    end
-    subgraph EDA["Event-Driven (broker) + Microservices"]
-        MQ{{RabbitMQ}}
-        INV[Inventory service<br/>layered]
-        ORD[Order service<br/>layered]
-        PAY["Payment service<br/>microkernel: PaymentProvider"]
-    end
-    B[Buyers] --> GATE
-    GATE --> MQ
-    MQ --> INV --> MQ
-    MQ --> ORD --> MQ
-    MQ --> PAY --> MQ
-    INV --> DB1[(Inventory DB)]
-    ORD --> DB2[(Order DB)]
+    U[Buyers] --> G[Admission / FIFO Gate]
+    G --> I[Inventory Service]
+    I --> S[Space-Based In-Memory Stock]
+    I --> E[Event Broker]
+    E --> O[Order Service]
+    E --> P[Payment Service]
+    O --> DB[(PostgreSQL)]
+    P --> DB
+    P --> E
 ```
 
-| Pattern | Where it is used | Why there |
-|---|---|---|
-| Layered | Inside every service | Simple, testable structure |
-| Event-Driven (broker) | Between services | Removes payment wait from the DB; steady processing |
-| Microkernel | Gate (allocation policy), Payment (provider) | Varies per sale without core changes |
-| Microservices | Deployment & scaling boundaries | Scale the gate for the burst, keep payment bounded |
-| Space-Based | Gate + stock claim | Removes the hot-row database bottleneck |
+| Pattern | Status | Where | Bottlenecks |
+|---|---|---|---|
+| Admission / FIFO gate | Selected | In front of Inventory | B1, B5, B6 |
+| Space-Based | Selected | Hot inventory state | B1, B3 |
+| Event-Driven (broker) | Selected | After the stock claim | B3, B4 |
+| Microservices | Selected | Inventory, Order, Payment | Independent scaling |
+| Layered | Baseline only | Step 0; internal structure of services | measurement |
+| Microkernel | Not selected | — | B6 (fixed FIFO is enough) |
 
-→ [ADR: combine-patterns-into-final-architecture](../adr/combine-patterns-into-final-architecture.md)
+→ [ADR-0004: Adopt the hybrid target architecture](../adr/combine-patterns-into-final-architecture.md)
