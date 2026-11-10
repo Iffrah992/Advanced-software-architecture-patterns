@@ -1,56 +1,66 @@
-# Architecture Decision Log
+# Architecture Decision Log — Flash Sale Purchase System
 
-Architecture Decision Records (ADRs) for the flash-sale system, following the
+Architecture Decision Records (ADRs) for the flash-sale project, following the
 [architecture-decision-record](https://github.com/architecture-decision-record/architecture-decision-record) conventions:
 
-- **Template:** Michael Nygard — *Title, Status, Context, Decision, Consequences* (plus date and links).
+- **Template:** Michael Nygard — *Status, Context, Decision, Consequences*, plus date, alternatives and links.
 - **File names:** present-tense imperative verb phrase, lowercase with dashes, `.md`.
-- **One decision per ADR.** A decision is never rewritten; it is amended with a dated note or **superseded** by a new ADR.
+- **One decision per ADR.** An accepted ADR is not rewritten; it is amended with a dated note or superseded by a new ADR.
 
-## Log (in the order decisions were made)
+Requirement IDs refer to [`docs/srs.md`](../docs/srs.md) (v1.3). Bottleneck IDs **B1–B6** refer to SRS Appendix B.3:
 
-| # | ADR | Status | Step | Solves |
+| ID | Bottleneck (SRS B.3) |
+|---|---|
+| B1 | Shared inventory contention |
+| B2 | Overselling |
+| B3 | Database connection exhaustion |
+| B4 | Slow payment dependency |
+| B5 | Retry amplification |
+| B6 | Fairness |
+
+## Log
+
+| ADR | Decision | Status | Bottlenecks | Requirements |
 |---|---|---|---|---|
-| 1 | [Record architecture decisions](record-architecture-decisions.md) | Accepted | — | — |
-| 2 | [Use layered architecture as baseline](use-layered-architecture-as-baseline.md) | Accepted, partly superseded by 9 | 0 | Baseline to measure |
-| 3 | [Claim stock atomically](claim-stock-atomically.md) | Accepted, amended by 10 | 1 | P2 Overselling |
-| 4 | [Use idempotency keys](use-idempotency-keys.md) | Accepted | 2 | P4 Retry storms |
-| 5 | [Control entry with a server-side queue](control-entry-with-server-side-queue.md) | Accepted | 3 | P1, P4, P5 |
-| 6 | [Release the database before payment](release-database-before-payment.md) | Accepted | 4 | P3 Slow payments |
-| 7 | [Use event-driven broker topology](use-event-driven-broker-topology.md) | Accepted | 4 | P3, P1 |
-| 8 | [Use microkernel for sale rules](use-microkernel-for-sale-rules.md) | Accepted | 5 | P5 flexibility |
-| 9 | [Split into microservices](split-into-microservices.md) | Accepted | 6 | Independent scaling |
-| 10 | [Keep hot stock in an in-memory grid](keep-hot-stock-in-memory-grid.md) | Accepted | 7 | P1 DB jam |
-| 11 | [Combine patterns into the final architecture](combine-patterns-into-final-architecture.md) | Accepted | ✓ | P1–P5 |
+| [0001](record-architecture-decisions.md) | Record architecture decisions | Accepted | — | C-6 |
+| [0002](use-postgresql-as-system-of-record.md) | Use PostgreSQL as the persistent system of record | Accepted | B2 | C-2, SI-1, DB-1–DB-4 |
+| [0003](use-layered-architecture-as-baseline.md) | Use a layered monolith as the measured baseline | Accepted | all (measured) | C-5, FR-15–FR-18 |
+| [0004](combine-patterns-into-final-architecture.md) | Adopt the hybrid target architecture | Accepted | B1–B6 | C-7, C-8 |
+| [0005](control-entry-with-server-side-queue.md) | Control entry with a server-side admission/FIFO queue | Accepted | B1, B5, B6 | FR-1–FR-4, C-4, C-8 |
+| [0006](claim-stock-atomically.md) | Claim stock atomically | Accepted | B2 | FR-5–FR-7, PR-1, SAF-1 |
+| [0007](keep-hot-stock-in-memory-grid.md) | Keep hot stock in a space-based in-memory layer | Accepted | B1, B3 | FR-4, FR-5, SI-2 |
+| [0008](release-database-before-payment.md) | Release the database before payment | Accepted | B3, B4 | FR-8–FR-12, SAF-3 |
+| [0009](use-event-driven-broker-topology.md) | Use event-driven broker topology | Accepted | B4 | FR-9–FR-12, SI-3 |
+| [0010](split-into-microservices.md) | Split into Inventory, Order and Payment microservices | Accepted | B1, B4 | C-7, §5.4 |
+| [0011](use-idempotency-keys.md) | Use idempotency keys | Accepted | B5 | FR-13, FR-14, PR-2, SAF-2 |
+| [0012](use-microkernel-for-sale-rules.md) | Use microkernel for sale rules | **Rejected** | B6 | §5.4 Fairness |
+| [0013](choose-in-memory-data-grid-technology.md) | Choose the in-memory data-grid technology | **Proposed** | B1 | SI-2, App. C #2 |
+| [0014](choose-event-broker-technology.md) | Choose the event-broker technology | **Proposed** | B4 | SI-3, App. C #3 |
 
 ## Status values
 
-`Proposed` → `Accepted` → (`Deprecated` | `Superseded by …`). `Rejected` for options considered and not taken.
+`Proposed` → `Accepted` → (`Deprecated` | `Superseded by …`). `Rejected` records an option that was evaluated and not taken.
 
-## How to add an ADR
-
-1. Copy the template below into a new file named with an imperative verb phrase (e.g. `choose-load-test-tool.md`).
-2. Fill in Context with the problem and the options considered, then Decision and Consequences.
-3. Add a row to the log above and commit the ADR with the code change it describes.
+## Template for new ADRs
 
 ```markdown
-# Title (imperative verb phrase)
+# ADR-NNNN: Title (imperative verb phrase)
 
 **Date:** YYYY-MM-DD
 
 ## Status
 
-Proposed | Accepted | Rejected | Deprecated | Superseded by [x](x.md)
+Proposed | Accepted | Rejected | Deprecated | Superseded by [ADR-XXXX](file.md)
 
 ## Context
 
-What is the issue that motivates this decision? What forces and options are in play?
+The problem, the forces in play, and the options considered.
 
 ## Decision
 
-What is the change that we are proposing and/or doing?
+What we will do.
 
 ## Consequences
 
-What becomes easier or harder because of this change? Follow-up decisions?
+What becomes easier or harder; follow-up decisions; how it will be verified.
 ```
