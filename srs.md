@@ -1,452 +1,549 @@
 # Software Requirements Specification
 ## Flash Sale Purchase System
 
-| | |
-|---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-10-26 |
-| **Prepared by** | Flash Sale Bottlenecks project team |
-| **Template** | IEEE Std 830-1998 (structure retained; aligned with ISO/IEC/IEEE 29148:2018) |
-| **Status** | Draft for review |
+**Version:** 1.2  
+**Prepared by:** Flash Sale Bottlenecks Project Team  
+**Date:** 2026-11-09  
+**Status:** Draft for Review
 
 ---
 
-## Table of Contents
+## Revision History
 
-1. [Introduction](#1-introduction)
-   - 1.1 [Purpose](#11-purpose)
-   - 1.2 [Scope](#12-scope)
-   - 1.3 [Definitions, Acronyms and Abbreviations](#13-definitions-acronyms-and-abbreviations)
-   - 1.4 [References](#14-references)
-   - 1.5 [Overview](#15-overview)
-2. [Overall Description](#2-overall-description)
-   - 2.1 [Product Perspective](#21-product-perspective)
-   - 2.2 [Product Functions](#22-product-functions)
-   - 2.3 [User Characteristics](#23-user-characteristics)
-   - 2.4 [Constraints](#24-constraints)
-   - 2.5 [Assumptions and Dependencies](#25-assumptions-and-dependencies)
-   - 2.6 [Apportioning of Requirements](#26-apportioning-of-requirements)
-3. [Specific Requirements](#3-specific-requirements)
-   - 3.1 [External Interface Requirements](#31-external-interface-requirements)
-   - 3.2 [Functional Requirements](#32-functional-requirements)
-   - 3.3 [Performance Requirements](#33-performance-requirements)
-   - 3.4 [Logical Database Requirements](#34-logical-database-requirements)
-   - 3.5 [Design Constraints](#35-design-constraints)
-   - 3.6 [Software System Attributes](#36-software-system-attributes)
-4. [Verification](#4-verification)
-- [Appendix A — Problem Analysis](#appendix-a--problem-analysis)
-- [Appendix B — Traceability Matrix](#appendix-b--traceability-matrix)
-- [Appendix C — Revision History](#appendix-c--revision-history)
+| Name | Date | Reason for Changes | Version |
+|---|---|---|---|
+| Project Team | 2026-10-24 | Initial problem statement based on project presentation | 0.1 |
+| Project Team | 2026-10-26 | First complete SRS | 1.0 |
+| Project Team | 2026-11-09 | Revised to match the IEEE course template and remove premature design decisions | 1.1 |
+| Project Team | 2026-11-09 | Added selected hybrid architecture and fixed PostgreSQL as the persistent database | 1.2 |
 
 ---
 
-## 1. Introduction
+# 1. Introduction
 
-### 1.1 Purpose
+## 1.1 Purpose
 
-This SRS specifies the requirements for a purchase system that must stay **correct, responsive and fair** during a flash sale: a very small stock (100 units) offered to a very large crowd (10,000+ buyers) at one precise moment (12:00).
+This document describes the requirements for a flash-sale purchase system. The project focuses on a situation where a small amount of stock is offered to a very large number of buyers at the same time.
 
-It is written for the project team, the supervisor who reviews progress on GitHub, and anyone evaluating the decisions recorded in [`/adr`](../adr/README.md).
+The reference scenario is **100 limited-edition items and about 10,000 buyers**, with most purchase requests arriving at the start of the sale.
 
-### 1.2 Scope
+The purpose of the project is not only to build the purchase flow, but also to identify where the baseline architecture becomes a bottleneck under heavy concurrent load and then evaluate possible architectural improvements.
 
-The product, referred to as **FlashSale**, handles the purchase path of a limited-stock sale:
+## 1.2 Document Conventions
 
-- admitting buyers in a controlled, fair order;
-- claiming stock without ever overselling;
-- creating orders and taking payment without blocking the database;
-- recognising repeated clicks so no buyer is charged twice;
-- returning stock to sale when a payment fails or a reservation expires.
+- Functional requirements use IDs such as `FR-1`, `FR-2`, etc.
+- Performance requirements use IDs such as `PR-1`.
+- The word **shall** means the requirement is mandatory.
+- Priorities are written as **Must**, **Should**, or **Could**.
+- Values such as latency limits are initial targets and may be revised after baseline testing.
+- Major architecture decisions will be documented separately as ADRs.
 
-**Out of scope:** catalogue management, user registration, shipping, refunds after delivery, marketing pages. These exist in the surrounding e-commerce platform.
+## 1.3 Intended Audience and Reading Suggestions
 
-**Goal:** sell exactly the available stock, to buyers chosen by a defined and transparent policy, while every buyer quickly receives a clear answer (*won / waiting / sold out*).
+This SRS is intended for the project team and the course supervisor.
 
-### 1.3 Definitions, Acronyms and Abbreviations
+Developers can use Sections 3 and 4 for interfaces and functional behaviour. Section 5 describes performance and quality requirements. Section 6 explains the database and testing requirements. The appendices contain the glossary, project model, bottlenecks, and items that are still undecided.
 
-| Term | Definition |
-|---|---|
-| **Flash sale** | A time-boxed sale of very limited stock that starts at a fixed instant |
-| **Hot row / hot key** | A single stock record that all concurrent requests try to update |
-| **Atomic claim** | A "check stock and decrement" operation that executes as one indivisible step |
-| **Reservation** | A temporary hold on one unit, valid until payment completes or a TTL expires |
-| **TTL** | Time-to-live: how long a reservation is held before stock returns to sale |
-| **Gate / waiting room** | Component that admits buyers at a controlled rate and assigns queue positions |
-| **Ticket** | Server-assigned, strictly increasing sequence number given to each accepted request |
-| **Idempotency key** | Unique ID per purchase attempt; repeating a request with the same key returns the original result |
-| **Retry storm** | Feedback loop where slow responses cause retries, which add more load |
-| **Connection pool** | Fixed set of DB connections an application server can use concurrently |
-| **Transactional outbox** | DB table written in the same transaction as business data, from which events are published reliably |
-| **ADR** | Architecture Decision Record |
-| **EDA** | Event-Driven Architecture |
-| **FIFO** | First In, First Out |
-| **p95 / p99** | 95th / 99th percentile latency |
-| **SKU** | Stock Keeping Unit — the product being sold |
-| **VU** | Virtual user in a load test |
+## 1.4 Product Scope
 
-### 1.4 References
+The system covers the purchase flow of a flash sale. It will:
 
-1. IEEE Std 830-1998, *IEEE Recommended Practice for Software Requirements Specifications*.
-2. ISO/IEC/IEEE 29148:2018, *Systems and software engineering — Requirements engineering*.
-3. M. Richards, *Software Architecture Patterns*, O'Reilly Media.
-4. M. Nygard, *Documenting Architecture Decisions*, 2011.
-5. ADR repository — <https://github.com/architecture-decision-record/architecture-decision-record>.
-6. Project slides: *Flash Sale Bottlenecks — When 10,000 People Click "Buy" at Once*.
+- accept purchase requests during a sudden traffic spike;
+- prevent the system from selling more items than are available;
+- create and track reservations and orders;
+- process payment without keeping database resources busy longer than necessary;
+- handle repeated purchase attempts safely;
+- use a defined rule for deciding which buyers get limited stock;
+- collect enough measurements to identify the actual bottlenecks.
 
-### 1.5 Overview
+The project does **not** include a complete e-commerce platform. Product catalogue management, shipping, refunds, recommendations, and marketing pages are outside the project scope.
 
-Section 2 describes context, functions, users and constraints. Section 3 lists testable requirements, each with an ID, priority, rationale and the problem it traces to. Section 4 defines verification by load testing. Appendix A analyses the five bottlenecks; Appendix B traces every problem to requirements, ADRs and patterns.
+## 1.5 References
+
+1. IEEE Software Requirements Specification Template provided for the course.
+2. IEEE Std 830-1998, *IEEE Recommended Practice for Software Requirements Specifications*.
+3. ADR repository: <https://github.com/architecture-decision-record/architecture-decision-record>.
+4. Project presentation: *Flash Sale Bottlenecks — When 10,000 People Click Buy at Once*.
 
 ---
 
-## 2. Overall Description
+# 2. Overall Description
 
-### 2.1 Product Perspective
+## 2.1 Product Perspective
 
-FlashSale is a subsystem of an existing e-commerce platform. It replaces the normal checkout path only for SKUs marked as flash-sale items.
+The flash-sale system represents the purchase part of a larger e-commerce application. The project starts from a simple synchronous baseline so that its limitations can be observed under load before the resolution is implemented.
+
+### Baseline architecture
+
+In the baseline version, a buyer sends a purchase request to one application. The application checks inventory, creates an order, communicates with the payment service, and stores the result in PostgreSQL.
 
 ```mermaid
 flowchart LR
-    B[Buyer browser / app] -->|HTTPS| FS[FlashSale]
-    FS -->|read user & SKU| P[(E-commerce platform DB)]
-    FS -->|charge| PG[Payment gateway]
-    FS -->|order confirmed| N[Notification service]
-    A[Sale admin] -->|configure sale| FS
+    B[Buyer] --> A[Monolithic Application]
+    A --> D[(PostgreSQL)]
+    A --> P[Payment Service]
 ```
 
-On a normal day the platform works fine. The problem only appears when everyone competes for the same tiny stock at once — so FlashSale is designed around that single moment.
+### Selected target architecture
 
-### 2.2 Product Functions
+The selected resolution is a **hybrid architecture** combining:
 
-| # | Function | Summary |
-|---|---|---|
-| PF-1 | Configure sale | Admin sets SKU, stock, start time, per-user limit, TTL, allocation policy |
-| PF-2 | Controlled entry | Admit buyers at a safe rate; give each a server-side queue position |
-| PF-3 | Reserve stock | Atomically claim one unit for an admitted buyer |
-| PF-4 | Create order | Record a pending order linked to the reservation |
-| PF-5 | Take payment | Charge the buyer asynchronously, outside any DB transaction |
-| PF-6 | Confirm / release | Confirm on success; return the unit to sale on failure or TTL expiry |
-| PF-7 | Deduplicate | Recognise repeated requests and return the original outcome |
-| PF-8 | Inform buyer | Show status: waiting (with position), reserved, paid, sold out |
-| PF-9 | Monitor | Expose metrics on stock, queue length, pool usage and latency |
+- **Microservices** for separating inventory, order, and payment responsibilities and allowing them to scale independently;
+- **Event-Driven Architecture** so slow operations such as payment do not block the inventory path;
+- **Space-Based Architecture** for the highly contended flash-sale inventory state, reducing direct pressure on the PostgreSQL stock record during the traffic burst;
+- a **server-side admission/FIFO queue** to control the burst and provide a defined allocation order.
 
-Purchase lifecycle implemented by these functions:
+PostgreSQL remains the persistent system of record for orders, reservations, and durable sale data. The space-based layer is used for the hot inventory state during the sale, while events coordinate the later order and payment steps.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Waiting: request accepted, ticket issued
-    Waiting --> SoldOut: no stock left for this ticket
-    Waiting --> Reserved: atomic claim succeeded
-    Reserved --> PaymentPending: order created, DB released
-    PaymentPending --> Confirmed: payment succeeded
-    PaymentPending --> Released: payment failed
-    Reserved --> Released: TTL expired
-    PaymentPending --> Released: TTL expired
-    Released --> [*]: unit returned to sale
-    Confirmed --> [*]
-    SoldOut --> [*]
+flowchart LR
+    U[Buyers] --> G[Admission / FIFO Gate]
+    G --> I[Inventory Service]
+    I --> S[Space-Based In-Memory Stock]
+    I --> E[Event Broker]
+    E --> O[Order Service]
+    E --> P[Payment Service]
+    O --> DB[(PostgreSQL)]
+    P --> DB
+    P --> E
 ```
 
-### 2.3 User Characteristics
+The main interest of the project is to compare the baseline with this selected architecture and measure whether the new design actually reduces the identified bottlenecks.
 
-| User class | Characteristics | Implication |
-|---|---|---|
-| **Buyer** | Large crowd, varied devices and network speeds, impatient, clicks again if the page is slow | Must tolerate retries, give fast feedback, not reward network speed |
-| **Bot / scripted client** | Sends requests faster than humans | Gate must rate-limit per user/IP and enforce per-user limits |
-| **Sale administrator** | Technical staff configuring a sale | Simple configuration; frozen once sale starts |
-| **Operator** | Watches the sale live | Needs real-time dashboards and alerts |
+## 2.2 Product Functions
 
-### 2.4 Constraints
+The main functions are:
+
+- start and configure a flash sale;
+- accept purchase requests;
+- check and reserve available stock;
+- create an order;
+- process payment;
+- confirm or cancel the order;
+- return reserved stock when payment fails or times out;
+- detect duplicate purchase attempts;
+- inform the buyer of the current result or status;
+- record system metrics for load testing.
+
+## 2.3 User Classes and Characteristics
+
+| User Class | Description |
+|---|---|
+| **Buyer** | Attempts to purchase an item during the flash sale and receives the result or current status. |
+| **Administrator** | Configures the sale before it starts, including product, quantity, and start time. |
+| **Project operator/developer** | Runs tests and checks system metrics during experiments. |
+
+## 2.4 Operating Environment
+
+The planned environment is:
+
+- Java 21;
+- Spring Boot;
+- **PostgreSQL** as the persistent relational database;
+- separate Inventory, Order, and Payment services in the improved architecture;
+- a distributed in-memory component for the space-based inventory layer;
+- an event broker for asynchronous communication between services;
+- a REST-based or simulated payment service;
+- a load-testing tool such as k6 or Gatling;
+- local or container-based deployment for testing.
+
+The exact product used for the in-memory space and the event broker will be recorded in ADRs once the implementation technology is chosen.
+
+## 2.5 Design and Implementation Constraints
 
 | ID | Constraint |
 |---|---|
-| C-1 | Implementation language: Java 21 with Spring Boot |
-| C-2 | A relational DB (MySQL or PostgreSQL) remains the system of record for orders and stock |
-| C-3 | Payment gateway latency is outside our control: ~5 s typical, up to 30 s worst case |
-| C-4 | Client-side click time cannot be trusted for ordering (clocks and network delays differ) |
-| C-5 | Each architecture change is validated by load test before the next one (change one thing at a time) |
-| C-6 | Open-source components only (Redis, RabbitMQ, k6/Gatling) |
+| C-1 | The backend will be implemented in Java with Spring Boot. |
+| C-2 | PostgreSQL will be used as the persistent system of record for orders, reservations, and durable sale data. |
+| C-3 | Payment processing is treated as an external dependency and may be slow. |
+| C-4 | Client-side timestamps will not be used as the only basis for deciding who receives stock. |
+| C-5 | The baseline architecture must be tested before major architectural improvements are added. |
+| C-6 | Major architecture decisions must be recorded as ADRs. |
+| C-7 | The improved implementation will combine Microservices, Event-Driven, and Space-Based architectural patterns. |
+| C-8 | The improved architecture will use a server-side admission/FIFO mechanism to control flash-sale traffic and allocation order. |
 
-### 2.5 Assumptions and Dependencies
+## 2.6 User Documentation
 
-| ID | Assumption / dependency |
+The project will include:
+
+- a `README.md` with setup and run instructions;
+- this SRS in Markdown;
+- ADR files for important architecture decisions;
+- basic instructions for running the load tests.
+
+A separate end-user manual is not required because the buyer interaction is small.
+
+## 2.7 Assumptions and Dependencies
+
+| ID | Assumption / Dependency |
 |---|---|
-| AS-1 | Buyers are authenticated before the sale opens; each has a stable user ID |
-| AS-2 | The payment gateway supports an idempotency key per charge |
-| AS-3 | One sale = one SKU; multi-SKU sales run as independent sales |
-| AS-4 | Redis and RabbitMQ are deployed with replication and persistence enabled |
-| AS-5 | Numerical targets in §3.3 are initial; they are confirmed or revised after the Step 0 baseline test |
-
-### 2.6 Apportioning of Requirements
-
-| Release | Content |
-|---|---|
-| **R1 (core)** | Atomic claim, idempotency, gate with FIFO queue, async payment, TTL release |
-| **R2** | Pluggable allocation policies (lottery, randomized queue), anti-bot plug-in |
-| **R3** | Multiple concurrent sales, regional deployment |
+| AS-1 | Each buyer can be identified by a stable user ID during testing. |
+| AS-2 | The payment service can be simulated so that slow and failed payments can be tested. |
+| AS-3 | The main experiment uses one flash-sale product with limited stock. |
+| AS-4 | Exact performance targets may change after the baseline system is measured. |
 
 ---
 
-## 3. Specific Requirements
+# 3. External Interface Requirements
 
-Priority uses **MoSCoW** (Must / Should / Could / Won't). Each requirement traces to a problem **P1–P5** (Appendix A).
+## 3.1 User Interfaces
 
-### 3.1 External Interface Requirements
-
-#### 3.1.1 User Interfaces
+The user interface only needs to support the basic flash-sale flow.
 
 | ID | Requirement |
 |---|---|
-| UI-1 | The Buy button shall be disabled after the first click and show a progress state until a final answer arrives. |
-| UI-2 | A waiting-room page shall show the buyer's queue position and refresh by polling (default every 2 s) without the buyer re-clicking. |
-| UI-3 | The page shall clearly show one of: *Waiting (position N)*, *Reserved — pay within MM:SS*, *Order confirmed*, *Payment failed — item returned to sale*, *Sold out*. |
+| UI-1 | The buyer shall be able to submit a purchase request. |
+| UI-2 | The system shall show whether the request is waiting, reserved, confirmed, failed, or sold out. |
+| UI-3 | The interface shall avoid encouraging repeated clicks while a request is still being processed. |
 
-#### 3.1.2 Hardware Interfaces
+## 3.2 Hardware Interfaces
 
-None specific. The system runs on commodity cloud instances or containers.
+No special hardware is required. The system will run on standard development machines or servers.
 
-#### 3.1.3 Software Interfaces
+## 3.3 Software Interfaces
 
 | ID | Interface | Description |
 |---|---|---|
-| SI-1 | Payment gateway | REST API; every charge carries the order ID as idempotency key |
-| SI-2 | Relational DB | JDBC; system of record for `sale`, `inventory`, `reservation`, `purchase_order`, `idempotency_record`, `outbox` |
-| SI-3 | Redis | Gate tickets, rate-limit counters, hot stock counter, idempotency cache |
-| SI-4 | RabbitMQ | Events between components (§3.2.4) |
+| SI-1 | PostgreSQL | Persistent system of record for sale, reservation, order, and payment data. |
+| SI-2 | Space-based in-memory component | Holds the highly contended inventory state during the flash-sale burst. |
+| SI-3 | Event broker | Carries events between Inventory, Order, and Payment services. |
+| SI-4 | Payment service | Simulates or performs payment processing. |
+| SI-5 | Load-testing tool | Generates concurrent purchase requests. |
 
-#### 3.1.4 Communications Interfaces
+## 3.4 Communications Interfaces
 
 | ID | Requirement |
 |---|---|
-| CI-1 | Client ↔ server over HTTPS (TLS 1.2+). |
-| CI-2 | `POST /sales/{saleId}/purchase` shall require an `Idempotency-Key` header (UUID v4). |
-| CI-3 | When the gate is full the server shall answer `429 Too Many Requests` with `Retry-After`, or `202 Accepted` with a ticket — never let the request time out. |
-| CI-4 | Purchase status shall be readable via `GET /purchases/{ticketId}`. |
+| CI-1 | Client and server communication shall use HTTP/HTTPS. |
+| CI-2 | Purchase requests shall be sent through a REST endpoint. |
+| CI-3 | The buyer shall be able to retrieve the current purchase status. |
 
-### 3.2 Functional Requirements
+---
 
-#### 3.2.1 Controlled Entry and Fairness — solves P1, P4, P5
+# 4. System Features
 
-| ID | Requirement | Priority | Rationale | Trace |
-|---|---|---|---|---|
-| FR-1 | The system shall admit purchase requests through a gate that limits how many reach the stock-claim step per second (configurable, default 500/s). | Must | Protects the stock record and DB from the full crowd. More app servers do not help if all of them queue on one record. | P1 |
-| FR-2 | The gate shall assign each accepted request a strictly increasing **server-side** ticket number at the moment the server accepts it. | Must | Client click time cannot be trusted (C-4). Server order is the only consistent order. | P5 |
-| FR-3 | Requests shall claim stock in ticket order (FIFO) unless the sale is configured with another allocation policy (FR-20). | Must | Defined, transparent allocation rule. | P5 |
-| FR-4 | Once tickets issued ≥ stock + buffer (default 20 %), further requests shall immediately receive *Sold out* or a waitlist position, without touching the DB. | Must | Most of the 10,000 buyers are answered from memory in milliseconds. | P1, P4 |
-| FR-5 | The gate shall enforce a per-user and per-IP request rate limit. | Should | Limits bots and aggressive clients. | P4, P5 |
+## 4.1 Purchase Request Handling
 
-#### 3.2.2 Stock Reservation — solves P2
+### 4.1.1 Description and Priority
 
-| ID | Requirement | Priority | Rationale | Trace |
-|---|---|---|---|---|
-| FR-6 | Checking availability and decrementing stock shall execute as **one atomic operation** that succeeds only if available stock > 0. | Must | Two separate steps let two buyers both see "1 left". | P2 |
-| FR-7 | Available stock shall never be negative at any observable moment. | Must | Overselling is a hard failure. | P2 |
-| FR-8 | A buyer shall not hold more reservations than the per-sale limit (default 1). | Must | Fair share; prevents hoarding. | P5 |
-| FR-9 | Each reservation shall have a TTL (default 5 min). On expiry the unit shall return to available stock automatically. | Must | Abandoned or stuck payments must not lock stock forever. | P3 |
+**Priority: High / Must**
 
-#### 3.2.3 Order and Payment — solves P3
+This feature accepts purchase requests and controls how they enter the purchase flow during heavy traffic.
 
-| ID | Requirement | Priority | Rationale | Trace |
-|---|---|---|---|---|
-| FR-10 | After a successful reservation the system shall create a `PENDING_PAYMENT` order and **commit the DB transaction before** any payment call. | Must | DB connections must not be held during the ~5 s bank wait. | P3 |
-| FR-11 | Payment shall be requested through a queue and processed by a bounded pool of payment workers. | Must | Steady processing instead of a burst; overload cannot cascade into the DB. | P1, P3 |
-| FR-12 | On payment success the order shall become `CONFIRMED`. | Must | — | P3 |
-| FR-13 | On payment failure or timeout the order shall become `FAILED` and the unit shall return to available stock **exactly once**. | Must | "Payment failed → item back on sale". | P2, P3 |
-| FR-14 | Each state change and the event announcing it shall be written in the same DB transaction (transactional outbox) and published afterwards. | Must | Prevents "order saved but event lost" and the reverse. | P2, P3 |
+### 4.1.2 Stimulus/Response Sequences
 
-#### 3.2.4 Events
+1. The buyer sends a purchase request.
+2. The server validates it.
+3. The request either continues to stock processing, waits, or receives a sold-out response.
+4. The system records enough information to keep the processing order clear.
 
-| ID | Requirement | Priority | Trace |
-|---|---|---|---|
-| FR-15 | The system shall publish: `PurchaseAdmitted`, `StockReserved`, `SoldOut`, `OrderCreated`, `PaymentSucceeded`, `PaymentFailed`, `ReservationExpired`, `StockReleased`, `OrderConfirmed`. | Must | P3 |
-| FR-16 | Every event consumer shall be idempotent: processing an event twice has the same effect as processing it once. | Must | P4 |
+### 4.1.3 Functional Requirements
 
-#### 3.2.5 Duplicate Protection — solves P4
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-1 | The system shall accept valid purchase requests for an active flash sale. | Must |
+| FR-2 | The system shall be able to limit how many requests reach the stock-processing step at the same time. | Must |
+| FR-3 | The system shall use a server-side rule to determine processing order when demand is higher than stock. | Must |
+| FR-4 | When stock is exhausted, later requests shall receive a sold-out response without unnecessary database work. | Must |
 
-| ID | Requirement | Priority | Rationale | Trace |
-|---|---|---|---|---|
-| FR-17 | A request carrying an `Idempotency-Key` already seen shall return the stored result of the first request and shall not create a new reservation, order or charge. | Must | A repeated click is recognised — no double charge. | P4 |
-| FR-18 | Idempotency records shall be kept for at least 24 h. | Must | Covers late retries. | P4 |
-| FR-19 | Every payment-gateway call shall use the order ID as the gateway idempotency key. | Must | Protects retries between our service and the bank. | P4 |
+## 4.2 Stock Reservation
 
-#### 3.2.6 Allocation Policies and Extensibility
+### 4.2.1 Description and Priority
 
-| ID | Requirement | Priority | Rationale | Trace |
-|---|---|---|---|---|
-| FR-20 | The allocation policy shall be pluggable: **strict FIFO** built in; **randomized queue** and **lottery** as optional plug-ins. | Should | Fairness requirements may change (slides: "Further study"). | P5 |
-| FR-21 | The payment provider integration shall be pluggable. | Could | Swap providers without touching the core. | — |
+**Priority: High / Must**
 
-#### 3.2.7 Administration and Monitoring
+This feature prevents overselling when many users try to purchase the last available units at the same time.
 
-| ID | Requirement | Priority | Trace |
-|---|---|---|---|
-| FR-22 | An admin shall configure SKU, quantity, start time, per-user limit, TTL and policy before the sale; configuration is read-only after start. | Must | — |
-| FR-23 | The system shall expose metrics: available stock, tickets issued, queue depth, DB pool active/idle, payment latency, error rate, retry rate. | Must | All |
-| FR-24 | After the sale a reconciliation job shall verify: confirmed orders + active reservations + available stock = initial stock. | Must | P2 |
+### 4.2.2 Stimulus/Response Sequences
 
-### 3.3 Performance Requirements
+1. A valid request reaches the stock step.
+2. The system checks whether stock is available.
+3. If stock is available, one unit is reserved safely.
+4. If not, the request is rejected as sold out.
+5. If the reservation later fails or expires, the unit is returned to stock.
 
-Targets for one sale of 100 units with 10,000 concurrent buyers (initial values — see AS-5).
+### 4.2.3 Functional Requirements
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-5 | Stock checking and stock claiming shall be performed so that two buyers cannot successfully claim the same final unit. | Must |
+| FR-6 | Available stock shall never become negative. | Must |
+| FR-7 | A buyer shall not reserve more than the allowed quantity for the sale. | Must |
+| FR-8 | A reservation shall expire if payment is not completed within the configured time. | Must |
+
+## 4.3 Order and Payment Processing
+
+### 4.3.1 Description and Priority
+
+**Priority: High / Must**
+
+Payment can be slower than the rest of the purchase flow. The system should avoid keeping database resources occupied while waiting for the payment service.
+
+### 4.3.2 Stimulus/Response Sequences
+
+1. Stock is reserved.
+2. A pending order is created.
+3. Payment is requested.
+4. If payment succeeds, the order is confirmed.
+5. If payment fails or times out, the order fails and the reserved stock is released.
+
+### 4.3.3 Functional Requirements
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-9 | The system shall create a pending order after successful stock reservation. | Must |
+| FR-10 | The system shall not keep a database transaction open while waiting for an external payment response. | Must |
+| FR-11 | Successful payment shall change the order status to confirmed. | Must |
+| FR-12 | Failed or timed-out payment shall release the reserved stock. | Must |
+
+## 4.4 Duplicate Request Handling
+
+### 4.4.1 Description and Priority
+
+**Priority: High / Must**
+
+Users may click again or a client may retry when the system is slow. The same logical purchase should not create multiple orders or charges.
+
+### 4.4.2 Stimulus/Response Sequences
+
+1. A purchase request is received.
+2. The system checks whether the same logical request has already been handled.
+3. A new request is processed normally.
+4. A duplicate request returns the result of the original request instead of creating another purchase.
+
+### 4.4.3 Functional Requirements
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-13 | The system shall identify repeated purchase attempts using a unique request identifier or equivalent mechanism. | Must |
+| FR-14 | A repeated request shall not create a second reservation, order, or successful charge. | Must |
+
+## 4.5 Monitoring and Experiment Support
+
+### 4.5.1 Description and Priority
+
+**Priority: High / Must**
+
+The project must be able to show where the architecture becomes a bottleneck instead of only assuming what the problem is.
+
+### 4.5.2 Stimulus/Response Sequences
+
+1. A test run starts.
+2. The load-testing tool generates concurrent purchase requests.
+3. The application records important metrics.
+4. After the run, the team compares the results and identifies the main bottleneck.
+
+### 4.5.3 Functional Requirements
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-15 | The system shall expose or record request latency and error rate. | Must |
+| FR-16 | The system shall record database connection usage and, where possible, lock waiting time. | Must |
+| FR-17 | The system shall record payment response time. | Must |
+| FR-18 | The system shall allow the team to check whether overselling or duplicate orders occurred. | Must |
+
+---
+
+# 5. Other Nonfunctional Requirements
+
+## 5.1 Performance Requirements
+
+The first tests will use the reference scenario of **100 units and about 10,000 concurrent buyers**.
 
 | ID | Requirement | Target |
 |---|---|---|
-| PR-1 | Oversold units | **0** in every test run |
-| PR-2 | Gate response time (ticket / sold out / 429) | p95 ≤ 200 ms, p99 ≤ 500 ms |
-| PR-3 | Stock claim response time | p95 ≤ 100 ms |
-| PR-4 | Burst capacity at T=0 | 10,000 requests within 1 s, zero timeouts |
-| PR-5 | DB connection pool utilisation at peak | ≤ 80 % |
-| PR-6 | DB connection hold time per purchase | ≤ 50 ms (never held during payment) |
-| PR-7 | Requests reaching the stock-claim step | ≤ 2 × stock (the rest are answered by the gate) |
-| PR-8 | Duplicate charges with every client retrying 3× | **0** |
-| PR-9 | Time to show *Sold out* after the last unit is reserved | ≤ 1 s |
+| PR-1 | Oversold units | 0 |
+| PR-2 | Duplicate successful charges for the same logical purchase | 0 |
+| PR-3 | The system shall remain measurable under burst load instead of failing silently. | Required |
+| PR-4 | Response time, throughput, error rate, DB connection usage, and payment delay shall be measured during each test. | Required |
 
-### 3.4 Logical Database Requirements
+Exact latency and throughput targets are intentionally left open until the baseline version is tested. The purpose of the first experiment is to find the real system limit.
 
-```mermaid
-erDiagram
-    SALE ||--|| INVENTORY : has
-    SALE ||--o{ RESERVATION : holds
-    RESERVATION ||--o| PURCHASE_ORDER : becomes
-    PURCHASE_ORDER ||--o{ PAYMENT_ATTEMPT : has
-    PURCHASE_ORDER ||--o| IDEMPOTENCY_RECORD : referenced_by
-    SALE {
-        bigint id PK
-        varchar sku
-        int initial_qty
-        timestamp starts_at
-        int per_user_limit
-        int reservation_ttl_s
-        varchar policy
-    }
-    INVENTORY {
-        bigint sale_id PK
-        int available
-    }
-    RESERVATION {
-        bigint id PK
-        bigint sale_id FK
-        bigint user_id
-        bigint ticket_no
-        varchar status
-        timestamp expires_at
-    }
-    PURCHASE_ORDER {
-        bigint id PK
-        bigint reservation_id FK
-        varchar status
-        decimal amount
-    }
-    PAYMENT_ATTEMPT {
-        bigint id PK
-        bigint order_id FK
-        varchar status
-        varchar gateway_ref
-    }
-    IDEMPOTENCY_RECORD {
-        uuid idem_key PK
-        bigint order_id FK
-        varchar response
-        timestamp created_at
-    }
-```
+## 5.2 Safety Requirements
+
+The system is not safety-critical in the physical sense, but incorrect behaviour can cause financial or transactional problems.
 
 | ID | Requirement |
 |---|---|
-| DB-1 | `inventory.available` shall have a `CHECK (available >= 0)` constraint as the last line of defence. |
-| DB-2 | `reservation` shall have a unique constraint on `(sale_id, user_id)` when the per-user limit is 1. |
-| DB-3 | `idempotency_record.idem_key` shall be the primary key, so duplicate inserts fail. |
-| DB-4 | An `outbox` table shall store events not yet published (FR-14). |
-| DB-5 | Orders and payment attempts shall be retained per financial-record rules. |
+| SAF-1 | The system shall not confirm more orders than the available stock. |
+| SAF-2 | The same purchase attempt shall not cause multiple successful charges. |
+| SAF-3 | Failed or expired reservations shall return stock correctly. |
 
-### 3.5 Design Constraints
+## 5.3 Security Requirements
 
-| ID | Constraint |
+| ID | Requirement |
 |---|---|
-| DC-1 | No DB transaction may span a call to an external system (payment gateway). |
-| DC-2 | No synchronous call chain longer than two hops on the purchase path. |
-| DC-3 | Every architecture decision is recorded as an ADR in `/adr`. |
-| DC-4 | Every requirement is verifiable by an automated test (§4). |
+| SE-1 | Purchase requests shall be associated with an identified user in the test system. |
+| SE-2 | Administrative sale configuration shall not be available to normal buyers. |
+| SE-3 | Card details shall not be stored by the flash-sale application. |
+| SE-4 | Production-style communication should use HTTPS. |
 
-### 3.6 Software System Attributes
+## 5.4 Software Quality Attributes
 
-| Attribute | ID | Requirement |
+| Attribute | Requirement |
+|---|---|
+| **Correctness** | Stock and order states shall remain consistent under concurrent requests. |
+| **Reliability** | A successful purchase result shall not be lost because another noncritical operation fails. |
+| **Scalability** | Inventory, order, and payment processing shall be separable so that overloaded parts can be scaled independently. |
+| **Maintainability** | Inventory, order, and payment responsibilities shall remain clearly separated across the selected services. |
+| **Fairness** | The system shall use a defined server-side allocation rule when demand exceeds stock. |
+| **Testability** | The important bottlenecks and requirements shall be testable with automated load and functional tests. |
+
+## 5.5 Business Rules
+
+| ID | Business Rule |
+|---|---|
+| BR-1 | A flash sale has a start time and a fixed initial quantity. |
+| BR-2 | A buyer may only purchase up to the configured limit. |
+| BR-3 | Once all stock is reserved or sold, additional buyers cannot receive confirmed orders unless stock is released again. |
+| BR-4 | A failed or expired reservation returns its unit to available stock. |
+| BR-5 | The same logical purchase attempt must not produce more than one successful charge. |
+
+---
+
+# 6. Other Requirements
+
+## 6.1 Logical Database Requirements
+
+The first version requires the following main data objects:
+
+- **Sale** — identifies the flash sale and its initial stock.
+- **Inventory** — stores the current available quantity.
+- **Reservation** — stores temporary stock claims.
+- **Order** — stores the purchase state.
+- **Payment Attempt** — stores payment results used for testing and reconciliation.
+- **Request Identifier** — helps detect repeated purchase attempts.
+
+The exact table structure may change during implementation.
+
+Basic database rules are:
+
+| ID | Requirement |
+|---|---|
+| DB-1 | Available stock shall not be stored as a negative value. |
+| DB-2 | Order and reservation data shall be stored persistently. |
+| DB-3 | Duplicate request identifiers shall be detectable. |
+| DB-4 | The database shall support the transaction behaviour required for safe stock reservation. |
+
+## 6.2 Verification and Load Testing
+
+The project will use the following approach:
+
+**build the baseline -> load-test it -> identify the bottleneck -> change one architectural decision -> test again**
+
+Planned tests include:
+
+| Test | Setup | Purpose |
 |---|---|---|
-| **Reliability** | RL-1 | No accepted payment shall be lost: every `PaymentSucceeded` results in a `CONFIRMED` order. |
-| | RL-2 | Message delivery is at-least-once, with idempotent consumers (FR-16). |
-| **Availability** | AV-1 | The purchase path shall be available 99.9 % of the sale window. |
-| | AV-2 | Failure of the notification service shall not block purchases. |
-| **Security** | SE-1 | Only authenticated users may purchase. |
-| | SE-2 | Tickets and idempotency keys are bound to the user ID (not transferable). |
-| | SE-3 | Card data is never stored; payment uses gateway tokenisation. |
-| **Maintainability** | MA-1 | Allocation policies and payment providers are plug-ins (FR-20, FR-21). |
-| | MA-2 | Each component has a single responsibility and its own tests. |
-| **Portability** | PO-1 | All components run as containers. |
-| **Fairness** | FA-1 | Allocation order depends only on server acceptance order (or the configured policy) — never on client timestamps, retry count, or which server handled the request. |
-| **Observability** | OB-1 | Every request carries a correlation ID through all logs and events. |
+| T-1 Burst test | 10,000 buyers, stock 100 | Observe the first bottleneck under sudden load |
+| T-2 Overselling test | Many buyers, stock 1 | Check whether concurrent requests can oversell |
+| T-3 Slow payment test | Artificial payment delay | Check whether payment blocks DB or application resources |
+| T-4 Retry test | Repeat the same request several times | Check duplicate-order and duplicate-charge protection |
+| T-5 Payment failure test | Some payments fail | Check whether reserved stock is returned correctly |
+| T-6 Fairness test | Many buyers arrive close together | Check whether the chosen server-side rule is followed |
+
+The main measurements will be response time, throughput, error rate, active database connections, lock wait time where available, payment delay, oversold units, and duplicate orders.
+
+## 6.3 Architecture Decision Records
+
+Important architecture decisions will be documented separately as ADRs. The selected architectural direction is already fixed, while technology-level choices will be recorded in individual ADRs. Planned ADR topics are:
+
+- use **PostgreSQL** as the persistent system of record;
+- use a **Space-Based Architecture** for the hot flash-sale inventory state;
+- use **Event-Driven Architecture** for communication after stock reservation;
+- split the improved system into **Inventory, Order, and Payment microservices**;
+- use a **server-side admission/FIFO queue** for overload control and fairness;
+- use idempotency to handle retries and duplicate purchase/payment requests;
+- choose the concrete in-memory data-grid technology and event-broker technology.
+
+## 6.4 Selected Architecture and Bottleneck Mapping
+
+The project uses a hybrid architecture because no single pattern resolves all of the identified bottlenecks.
+
+| Identified problem | Selected architectural response |
+|---|---|
+| Sudden burst of 10,000 purchase requests | Server-side admission/FIFO queue limits how many requests enter the critical path at once. |
+| Shared inventory record / database contention | Space-Based Architecture moves the hot inventory state to a distributed in-memory layer during the sale. |
+| Overselling | Inventory Service performs the stock claim as one safe atomic operation. |
+| Slow payment blocks resources | Event-Driven Architecture separates payment processing from the inventory transaction. |
+| Different parts need different scaling | Microservices allow Inventory, Order, and Payment services to scale independently. |
+| Retry storm / duplicate purchase | Idempotent request handling prevents the same logical request from creating repeated orders or charges. |
+| Fairness | Server-side FIFO ordering provides a defined allocation rule for accepted requests. |
+
+The selected design intentionally introduces distributed-system trade-offs such as event ordering, eventual consistency, duplicate message handling, and additional operational complexity. These trade-offs will be evaluated during implementation and testing rather than treated as automatically better than the baseline.
 
 ---
 
-## 4. Verification
+# Appendix A: Glossary
 
-Method from the project: **build simple → load-test → find what breaks first → change one thing → repeat.**
-
-| Test | Setup | Verifies |
-|---|---|---|
-| T-1 Burst | 10,000 VUs hit `purchase` at T=0, stock 100 | PR-2, PR-4, PR-7, FR-1, FR-4 |
-| T-2 Oversell | 1,000 VUs, stock 1, repeated 100 runs | FR-6, FR-7, PR-1 |
-| T-3 Slow payment | Payment stub delays 5 s, then 30 s | FR-10, FR-11, PR-5, PR-6 |
-| T-4 Retry storm | Each VU retries 3× after 1 s with the same key | FR-17, PR-8 |
-| T-5 Payment failure | Stub fails 30 % of payments | FR-13 — stock returns to sale |
-| T-6 Abandonment | Buyers reserve then never pay | FR-9 |
-| T-7 Fairness | VUs with injected network delay 0–500 ms | FR-2, FR-3, FA-1 — winners match ticket order |
-| T-8 Reconciliation | After every run | FR-24 |
-
-**Metrics per run:** throughput, p50/p95/p99 latency, DB lock wait time, active DB connections, queue depth, oversold count, duplicate charges, error rate.
-
-**Suspects measured first (Step 0):** database locks on stock · connection pool running out · payment delays. *Which one fails first? The data decides.*
+| Term | Meaning |
+|---|---|
+| **Flash sale** | A sale where limited stock is released at a fixed time and many buyers may arrive together. |
+| **Bottleneck** | A part of the system that limits the overall performance. |
+| **Race condition** | A problem where the result depends on the timing of concurrent operations. |
+| **Atomic operation** | An operation that is completed as one indivisible step. |
+| **Reservation** | A temporary hold on one unit of stock. |
+| **Idempotency** | Repeating the same request has the same final effect as processing it once. |
+| **Connection pool** | A limited set of database connections shared by the application. |
+| **FIFO** | First In, First Out. |
+| **ADR** | Architecture Decision Record. |
 
 ---
 
-## Appendix A — Problem Analysis
+# Appendix B: Analysis Models
 
-### P1 — The Database Jam
-Every purchase, whichever app server handles it, updates the **same stock record**. The row lock serialises them — one checkout counter with 10,000 customers. Adding servers only sends more people to the same counter.
-**Resolved by:** FR-1, FR-4, FR-11 and holding the hot counter in memory (Space-Based, Step 7).
+## B.1 Baseline Purchase Flow
 
-### P2 — Overselling
-Buyer A and Buyer B both read *stock = 1*, both pass the check, both decrement → stock = −1 and two confirmed orders for one shoe.
-**Resolved by:** FR-6, FR-7, DB-1 — check-and-take is one unbreakable step.
+```mermaid
+flowchart LR
+    U[Buyer] --> A[Application]
+    A --> S[Check stock]
+    S --> O[Create order]
+    O --> P[Payment service]
+    P --> C[Confirm or fail order]
+    A --> D[(Database)]
+```
 
-### P3 — Slow Payments
-A buyer reserves stock then waits ~5 s for the bank while the DB connection stays open. CPU may be fine — the **connection pool** is the real limit. Once exhausted, new buyers cannot even start.
-**Resolved by:** FR-9, FR-10, FR-11 — reserve → release DB → pay asynchronously.
+## B.2 Selected Hybrid Architecture
 
-### P4 — Retry Storms
-Slow page → user clicks again → more traffic → slower page: 1× → 2× → 4× load. Overload creates more overload.
-**Resolved by:** FR-4, FR-5, FR-17–FR-19, UI-1, CI-3.
+```mermaid
+flowchart LR
+    U[Buyers] --> G[Admission / FIFO Gate]
+    G --> I[Inventory Service]
+    I --> S[Space-Based In-Memory Stock]
+    I --> E[Event Broker]
+    E --> O[Order Service]
+    E --> P[Payment Service]
+    O --> DB[(PostgreSQL)]
+    P --> DB
+    P --> E
+```
 
-### P5 — Fairness
-Without a policy, the winner depends on network speed, retries, or whichever server processed the request first.
-**Resolved by:** FR-2, FR-3, FR-20, FA-1 — a centralized server-side queue where the first valid request accepted by the server is processed first.
+The architecture combines Microservices, Event-Driven Architecture, Space-Based Architecture, and admission control. PostgreSQL remains the durable system of record.
+
+## B.3 Main Bottlenecks to Investigate
+
+1. **Shared inventory contention** — many requests try to update the same stock data.
+2. **Overselling** — concurrent requests may both observe the same remaining unit.
+3. **Database connection exhaustion** — slow processing may keep connections busy while new requests arrive.
+4. **Slow payment dependency** — the external payment service may delay the whole purchase path.
+5. **Retry amplification** — slow responses may cause repeated requests and add more load.
+6. **Fairness** — the system needs a defined rule for deciding which buyers get the limited stock.
+
+These are the expected bottlenecks based on the project analysis. Load testing will show which one becomes the main limitation first.
 
 ---
 
-## Appendix B — Traceability Matrix
+# Appendix C: To Be Determined List
 
-| Problem | Fix (slides) | Requirements | ADR | Pattern (step) |
-|---|---|---|---|---|
-| P1 DB jam | Controlled entry, Process gradually | FR-1, FR-4, FR-11, PR-5, PR-7 | [control-entry-with-server-side-queue](../adr/control-entry-with-server-side-queue.md), [keep-hot-stock-in-memory-grid](../adr/keep-hot-stock-in-memory-grid.md) | Layered + gate (3), Space-Based (7) |
-| P2 Overselling | Safe stock claim | FR-6, FR-7, FR-13, FR-24, DB-1 | [claim-stock-atomically](../adr/claim-stock-atomically.md) | Layered (1) |
-| P3 Slow payments | Don't make the DB wait | FR-9, FR-10, FR-11, FR-14, DC-1 | [release-database-before-payment](../adr/release-database-before-payment.md), [use-event-driven-broker-topology](../adr/use-event-driven-broker-topology.md) | Event-Driven (4) |
-| P4 Retries | Unique request ID | FR-16–FR-19, UI-1, CI-2, CI-3 | [use-idempotency-keys](../adr/use-idempotency-keys.md) | Layered (2) |
-| P5 Fairness | Server-side queue | FR-2, FR-3, FR-20, FA-1 | [control-entry-with-server-side-queue](../adr/control-entry-with-server-side-queue.md), [use-microkernel-for-sale-rules](../adr/use-microkernel-for-sale-rules.md) | Layered + gate (3), Microkernel (5) |
-| Independent scaling | — | AV-2, DC-2, MA-2 | [split-into-microservices](../adr/split-into-microservices.md) | Microservices (6) |
+The following implementation details are intentionally not fixed yet:
 
----
+1. Exact request-admission/FIFO queue implementation.
+2. Exact distributed in-memory technology used for the Space-Based Architecture.
+3. Exact event-broker technology used for Event-Driven Architecture.
+4. Exact reservation timeout value.
+5. Exact latency and throughput targets after baseline measurement.
+6. Exact number of service instances used during load testing.
+7. Final deployment topology for the improved architecture.
 
-## Appendix C — Revision History
-
-| Version | Date | Author | Change |
-|---|---|---|---|
-| 0.1 | 2026-10-24 | Project team | Problem statement from slides |
-| 1.0 | 2026-10-26 | Project team | Full SRS: requirements, verification, traceability |
+The following decisions are now fixed for the project: **PostgreSQL** as the persistent database and a hybrid **Microservices + Event-Driven + Space-Based** target architecture with server-side admission control.
