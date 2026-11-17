@@ -7,7 +7,7 @@ Architecture Decision Records (ADRs) for the flash-sale project, following the
 - **File names:** present-tense imperative verb phrase, lowercase with dashes, `.md`.
 - **One decision per ADR.** An accepted ADR is not rewritten; it is amended with a dated note or superseded by a new ADR.
 
-Requirement IDs refer to [`docs/srs.md`](../docs/srs.md) (v1.4). Bottleneck IDs **B1–B6** refer to SRS Appendix B.3:
+Requirement IDs refer to [`docs/srs.md`](../docs/srs.md) (v1.3). Bottleneck IDs **B1–B6** refer to SRS Appendix B.3:
 
 | ID | Bottleneck (SRS B.3) |
 |---|---|
