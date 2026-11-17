@@ -1,6 +1,6 @@
-# Record architecture decisions
+# ADR-0001: Record architecture decisions
 
-**Date:** 2026-10-24
+**Date:** 2026-11-10
 
 ## Status
 
@@ -8,21 +8,22 @@ Accepted
 
 ## Context
 
-The flash-sale project is solved step by step with five architecture patterns. Each step changes one thing and is validated by load testing. Our supervisor reviews progress on GitHub and needs to see **why** each change was made, not only **what** changed. Without a record, the reasons behind choices such as "why not a mediator?" are lost, and later steps may undo earlier fixes by accident.
+The project starts from a baseline, measures its bottlenecks, and then changes one architectural decision at a time (SRS §6.2). Constraint C-6 requires major decisions to be recorded. The supervisor reviews progress on GitHub and needs to see **why** each change was made, not only what changed.
 
 Options considered:
 
-- Comments in code — scattered, and they explain code rather than architecture.
-- A single design document — hard to see the order and evolution of decisions.
-- ADRs in the repository — one small file per decision, versioned with the code.
+| Option | Assessment |
+|---|---|
+| Explain decisions only in the SRS | The SRS states requirements; mixing in design rationale makes it hard to read and to change |
+| Code comments | Scattered; explain code, not architecture |
+| **ADRs in the repository** | One small file per decision, versioned with the code, easy to review |
 
 ## Decision
 
-We will record every architecturally significant decision as an ADR in `/adr`, using the Michael Nygard template and the file-name conventions of the architecture-decision-record project. Each ADR links to the SRS requirements and problems (P1–P5) it addresses. Each step of the evolution is committed together with its ADR.
+Every architecturally significant decision is recorded as an ADR in `/adr`, using the Michael Nygard template and the naming conventions of the architecture-decision-record project. Each ADR links to the SRS requirements and bottlenecks (B1–B6) it addresses. Technology choices that are still open in SRS Appendix C are recorded as **Proposed** until confirmed.
 
 ## Consequences
 
-- The commit history shows the step-by-step evolution with its reasoning.
-- Requirements (SRS) → decisions (ADR) → patterns are traceable in both directions.
-- Writing an ADR takes a little time for each decision; we accept this cost.
-- Decisions are not edited after acceptance; changes require a dated amendment or a new superseding ADR.
+- Requirements (SRS) and decisions (ADRs) are traceable in both directions (SRS §6.3, §6.4).
+- The commit history shows the step-by-step evolution together with its reasoning.
+- Accepted ADRs are not edited; changes are made by a dated amendment or a superseding ADR.
