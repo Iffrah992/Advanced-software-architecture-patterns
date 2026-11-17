@@ -1,9 +1,9 @@
 # Software Requirements Specification
 ## Flash Sale Purchase System
 
-**Version:** 1.2  
+**Version:** 1.4  
 **Prepared by:** Flash Sale Bottlenecks Project Team  
-**Date:** 2026-11-09  
+**Date:** 2026-11-10  
 **Status:** Draft for Review
 
 ---
@@ -16,6 +16,8 @@
 | Project Team | 2026-10-26 | First complete SRS | 1.0 |
 | Project Team | 2026-11-09 | Revised to match the IEEE course template and remove premature design decisions | 1.1 |
 | Project Team | 2026-11-09 | Added selected hybrid architecture and fixed PostgreSQL as the persistent database | 1.2 |
+| Project Team | 2026-11-10 | Linked the full ADR set (Section 6.3) and the pattern evaluation document | 1.3 |
+| Project Team | 2026-11-17 | Review: standard reference updated to ISO/IEC/IEEE 29148:2018; UI-3, PR-3 and quality attributes made measurable; ADR-referenced requirement IDs unchanged | 1.4 |
 
 ---
 
@@ -36,13 +38,15 @@ The purpose of the project is not only to build the purchase flow, but also to i
 - The word **shall** means the requirement is mandatory.
 - Priorities are written as **Must**, **Should**, or **Could**.
 - Values such as latency limits are initial targets and may be revised after baseline testing.
-- Major architecture decisions will be documented separately as ADRs.
+- Major architecture decisions are documented separately as ADRs in [`/adr`](../adr/README.md).
 
 ## 1.3 Intended Audience and Reading Suggestions
 
 This SRS is intended for the project team and the course supervisor.
 
-Developers can use Sections 3 and 4 for interfaces and functional behaviour. Section 5 describes performance and quality requirements. Section 6 explains the database and testing requirements. The appendices contain the glossary, project model, bottlenecks, and items that are still undecided.
+Developers can use Sections 3 and 4 for interfaces and functional behaviour. Section 5 describes performance and quality requirements. Section 6 explains the database, testing and architecture-decision requirements. The appendices contain the glossary, project model, bottlenecks, and items that are still undecided.
+
+The evaluation of the five architecture patterns is in [`architecture-patterns.md`](architecture-patterns.md).
 
 ## 1.4 Product Scope
 
@@ -61,9 +65,10 @@ The project does **not** include a complete e-commerce platform. Product catalog
 ## 1.5 References
 
 1. IEEE Software Requirements Specification Template provided for the course.
-2. IEEE Std 830-1998, *IEEE Recommended Practice for Software Requirements Specifications*.
+2. ISO/IEC/IEEE 29148:2018, *Systems and software engineering — Life cycle processes — Requirements engineering*.
 3. ADR repository: <https://github.com/architecture-decision-record/architecture-decision-record>.
 4. Project presentation: *Flash Sale Bottlenecks — When 10,000 People Click Buy at Once*.
+5. M. Richards, *Software Architecture Patterns*, O'Reilly Media.
 
 ---
 
@@ -147,7 +152,7 @@ The planned environment is:
 - a load-testing tool such as k6 or Gatling;
 - local or container-based deployment for testing.
 
-The exact product used for the in-memory space and the event broker will be recorded in ADRs once the implementation technology is chosen.
+The exact product used for the in-memory space and the event broker is recorded in ADRs once the implementation technology is chosen (see Section 6.3).
 
 ## 2.5 Design and Implementation Constraints
 
@@ -194,7 +199,7 @@ The user interface only needs to support the basic flash-sale flow.
 |---|---|
 | UI-1 | The buyer shall be able to submit a purchase request. |
 | UI-2 | The system shall show whether the request is waiting, reserved, confirmed, failed, or sold out. |
-| UI-3 | The interface shall avoid encouraging repeated clicks while a request is still being processed. |
+| UI-3 | While a request is in the *waiting* state, the purchase control shall be disabled, so the buyer cannot submit a second request for the same sale from the same session. |
 
 ## 3.2 Hardware Interfaces
 
@@ -354,7 +359,7 @@ The first tests will use the reference scenario of **100 units and about 10,000 
 |---|---|---|
 | PR-1 | Oversold units | 0 |
 | PR-2 | Duplicate successful charges for the same logical purchase | 0 |
-| PR-3 | The system shall remain measurable under burst load instead of failing silently. | Required |
+| PR-3 | During each burst test, metrics shall be recorded at 1-second intervals with no gap longer than 5 seconds, and every failed request shall carry an error category. | Initial |
 | PR-4 | Response time, throughput, error rate, DB connection usage, and payment delay shall be measured during each test. | Required |
 
 Exact latency and throughput targets are intentionally left open until the baseline version is tested. The purpose of the first experiment is to find the real system limit.
@@ -382,12 +387,12 @@ The system is not safety-critical in the physical sense, but incorrect behaviour
 
 | Attribute | Requirement |
 |---|---|
-| **Correctness** | Stock and order states shall remain consistent under concurrent requests. |
-| **Reliability** | A successful purchase result shall not be lost because another noncritical operation fails. |
-| **Scalability** | Inventory, order, and payment processing shall be separable so that overloaded parts can be scaled independently. |
-| **Maintainability** | Inventory, order, and payment responsibilities shall remain clearly separated across the selected services. |
-| **Fairness** | The system shall use a defined server-side allocation rule when demand exceeds stock. |
-| **Testability** | The important bottlenecks and requirements shall be testable with automated load and functional tests. |
+| **Correctness** | Under T-2 and T-4, stock and order states shall match the expected outcome in 100% of runs. |
+| **Reliability** | In failure-injection runs (payment failure, broker restart), no request that received a confirmed result shall lose that result. |
+| **Scalability** | Each of the Inventory, Order, and Payment services shall be scalable by changing its instance count alone, with no code change; T-1 results shall be recorded for at least two instance counts. |
+| **Maintainability** | No service shall read or write another service's database tables; this shall be checked by code review and a dependency check. |
+| **Fairness** | When demand exceeds stock, the accepted requests shall match the server-assigned FIFO order in 100% of T-6 runs. |
+| **Testability** | Every requirement in Sections 3 to 5 shall be verified by at least one test in Section 6.2 or a review check, and the automated tests shall run without manual steps. |
 
 ## 5.5 Business Rules
 
@@ -429,7 +434,7 @@ Basic database rules are:
 
 The project will use the following approach:
 
-**build the baseline -> load-test it -> identify the bottleneck -> change one architectural decision -> test again**
+**build the baseline → load-test it → identify the bottleneck → change one architectural decision → test again**
 
 Planned tests include:
 
@@ -446,29 +451,38 @@ The main measurements will be response time, throughput, error rate, active data
 
 ## 6.3 Architecture Decision Records
 
-Important architecture decisions will be documented separately as ADRs. The selected architectural direction is already fixed, while technology-level choices will be recorded in individual ADRs. Planned ADR topics are:
+Important architecture decisions are documented separately as ADRs in [`/adr`](../adr/README.md). The selected architectural direction is fixed (Accepted ADRs), while technology-level choices are recorded as Proposed ADRs until confirmed (see Appendix C).
 
-- use **PostgreSQL** as the persistent system of record;
-- use a **Space-Based Architecture** for the hot flash-sale inventory state;
-- use **Event-Driven Architecture** for communication after stock reservation;
-- split the improved system into **Inventory, Order, and Payment microservices**;
-- use a **server-side admission/FIFO queue** for overload control and fairness;
-- use idempotency to handle retries and duplicate purchase/payment requests;
-- choose the concrete in-memory data-grid technology and event-broker technology.
+| ADR | Decision | Status | Main requirements |
+|---|---|---|---|
+| [ADR-0001](../adr/record-architecture-decisions.md) | Record architecture decisions | Accepted | C-6 |
+| [ADR-0002](../adr/use-postgresql-as-system-of-record.md) | Use PostgreSQL as the persistent system of record | Accepted | C-2, SI-1, DB-1–DB-4 |
+| [ADR-0003](../adr/use-layered-architecture-as-baseline.md) | Use a layered monolith as the measured baseline | Accepted | C-5, FR-15–FR-18, §6.2 |
+| [ADR-0004](../adr/combine-patterns-into-final-architecture.md) | Adopt the hybrid target architecture | Accepted | C-7, C-8, §6.4 |
+| [ADR-0005](../adr/control-entry-with-server-side-queue.md) | Control entry with a server-side admission/FIFO queue | Accepted | FR-1–FR-4, C-4, C-8 |
+| [ADR-0006](../adr/claim-stock-atomically.md) | Claim stock atomically | Accepted | FR-5–FR-7, PR-1, SAF-1, DB-1 |
+| [ADR-0007](../adr/keep-hot-stock-in-memory-grid.md) | Keep hot stock in a space-based in-memory layer | Accepted | FR-4, FR-5, SI-2, C-7 |
+| [ADR-0008](../adr/release-database-before-payment.md) | Release the database before payment | Accepted | FR-8–FR-12, SAF-3, BR-4 |
+| [ADR-0009](../adr/use-event-driven-broker-topology.md) | Use event-driven broker topology | Accepted | FR-9–FR-12, SI-3, C-7 |
+| [ADR-0010](../adr/split-into-microservices.md) | Split into Inventory, Order and Payment microservices | Accepted | C-7, §5.4 Scalability, Maintainability |
+| [ADR-0011](../adr/use-idempotency-keys.md) | Use idempotency keys | Accepted | FR-13, FR-14, PR-2, SAF-2, BR-5, DB-3 |
+| [ADR-0012](../adr/use-microkernel-for-sale-rules.md) | Use microkernel for sale rules | Rejected | §5.4 Fairness |
+| [ADR-0013](../adr/choose-in-memory-data-grid-technology.md) | Choose the in-memory data-grid technology | Proposed | SI-2, Appendix C item 2 |
+| [ADR-0014](../adr/choose-event-broker-technology.md) | Choose the event-broker technology | Proposed | SI-3, Appendix C item 3 |
 
 ## 6.4 Selected Architecture and Bottleneck Mapping
 
 The project uses a hybrid architecture because no single pattern resolves all of the identified bottlenecks.
 
-| Identified problem | Selected architectural response |
-|---|---|
-| Sudden burst of 10,000 purchase requests | Server-side admission/FIFO queue limits how many requests enter the critical path at once. |
-| Shared inventory record / database contention | Space-Based Architecture moves the hot inventory state to a distributed in-memory layer during the sale. |
-| Overselling | Inventory Service performs the stock claim as one safe atomic operation. |
-| Slow payment blocks resources | Event-Driven Architecture separates payment processing from the inventory transaction. |
-| Different parts need different scaling | Microservices allow Inventory, Order, and Payment services to scale independently. |
-| Retry storm / duplicate purchase | Idempotent request handling prevents the same logical request from creating repeated orders or charges. |
-| Fairness | Server-side FIFO ordering provides a defined allocation rule for accepted requests. |
+| Identified problem | Selected architectural response | ADR |
+|---|---|---|
+| Sudden burst of 10,000 purchase requests | Server-side admission/FIFO queue limits how many requests enter the critical path at once. | ADR-0005 |
+| Shared inventory record / database contention | Space-Based Architecture moves the hot inventory state to a distributed in-memory layer during the sale. | ADR-0007 |
+| Overselling | Inventory Service performs the stock claim as one safe atomic operation. | ADR-0006 |
+| Slow payment blocks resources | Event-Driven Architecture separates payment processing from the inventory transaction. | ADR-0008, ADR-0009 |
+| Different parts need different scaling | Microservices allow Inventory, Order, and Payment services to scale independently. | ADR-0010 |
+| Retry storm / duplicate purchase | Idempotent request handling prevents the same logical request from creating repeated orders or charges. | ADR-0011 |
+| Fairness | Server-side FIFO ordering provides a defined allocation rule for accepted requests. | ADR-0005 |
 
 The selected design intentionally introduces distributed-system trade-offs such as event ordering, eventual consistency, duplicate message handling, and additional operational complexity. These trade-offs will be evaluated during implementation and testing rather than treated as automatically better than the baseline.
 
@@ -501,7 +515,7 @@ flowchart LR
     S --> O[Create order]
     O --> P[Payment service]
     P --> C[Confirm or fail order]
-    A --> D[(Database)]
+    A --> D[(PostgreSQL)]
 ```
 
 ## B.2 Selected Hybrid Architecture
@@ -539,8 +553,8 @@ These are the expected bottlenecks based on the project analysis. Load testing w
 The following implementation details are intentionally not fixed yet:
 
 1. Exact request-admission/FIFO queue implementation.
-2. Exact distributed in-memory technology used for the Space-Based Architecture.
-3. Exact event-broker technology used for Event-Driven Architecture.
+2. Exact distributed in-memory technology used for the Space-Based Architecture (ADR-0013, Proposed).
+3. Exact event-broker technology used for Event-Driven Architecture (ADR-0014, Proposed).
 4. Exact reservation timeout value.
 5. Exact latency and throughput targets after baseline measurement.
 6. Exact number of service instances used during load testing.
