@@ -1,7 +1,7 @@
 # Software Requirements Specification
 ## Flash Sale Purchase System
 
-**Version:** 1.4  
+**Version:** 1.3  
 **Prepared by:** Flash Sale Bottlenecks Project Team  
 **Date:** 2026-11-10  
 **Status:** Draft for Review
@@ -17,7 +17,6 @@
 | Project Team | 2026-11-09 | Revised to match the IEEE course template and remove premature design decisions | 1.1 |
 | Project Team | 2026-11-09 | Added selected hybrid architecture and fixed PostgreSQL as the persistent database | 1.2 |
 | Project Team | 2026-11-10 | Linked the full ADR set (Section 6.3) and the pattern evaluation document | 1.3 |
-| Project Team | 2026-11-17 | Review: standard reference updated to ISO/IEC/IEEE 29148:2018; UI-3, PR-3 and quality attributes made measurable; ADR-referenced requirement IDs unchanged | 1.4 |
 
 ---
 
@@ -65,7 +64,7 @@ The project does **not** include a complete e-commerce platform. Product catalog
 ## 1.5 References
 
 1. IEEE Software Requirements Specification Template provided for the course.
-2. ISO/IEC/IEEE 29148:2018, *Systems and software engineering — Life cycle processes — Requirements engineering*.
+2. IEEE Std 830-1998, *IEEE Recommended Practice for Software Requirements Specifications*.
 3. ADR repository: <https://github.com/architecture-decision-record/architecture-decision-record>.
 4. Project presentation: *Flash Sale Bottlenecks — When 10,000 People Click Buy at Once*.
 5. M. Richards, *Software Architecture Patterns*, O'Reilly Media.
@@ -199,7 +198,7 @@ The user interface only needs to support the basic flash-sale flow.
 |---|---|
 | UI-1 | The buyer shall be able to submit a purchase request. |
 | UI-2 | The system shall show whether the request is waiting, reserved, confirmed, failed, or sold out. |
-| UI-3 | While a request is in the *waiting* state, the purchase control shall be disabled, so the buyer cannot submit a second request for the same sale from the same session. |
+| UI-3 | The interface shall avoid encouraging repeated clicks while a request is still being processed. |
 
 ## 3.2 Hardware Interfaces
 
@@ -359,7 +358,7 @@ The first tests will use the reference scenario of **100 units and about 10,000 
 |---|---|---|
 | PR-1 | Oversold units | 0 |
 | PR-2 | Duplicate successful charges for the same logical purchase | 0 |
-| PR-3 | During each burst test, metrics shall be recorded at 1-second intervals with no gap longer than 5 seconds, and every failed request shall carry an error category. | Initial |
+| PR-3 | The system shall remain measurable under burst load instead of failing silently. | Required |
 | PR-4 | Response time, throughput, error rate, DB connection usage, and payment delay shall be measured during each test. | Required |
 
 Exact latency and throughput targets are intentionally left open until the baseline version is tested. The purpose of the first experiment is to find the real system limit.
@@ -387,12 +386,12 @@ The system is not safety-critical in the physical sense, but incorrect behaviour
 
 | Attribute | Requirement |
 |---|---|
-| **Correctness** | Under T-2 and T-4, stock and order states shall match the expected outcome in 100% of runs. |
-| **Reliability** | In failure-injection runs (payment failure, broker restart), no request that received a confirmed result shall lose that result. |
-| **Scalability** | Each of the Inventory, Order, and Payment services shall be scalable by changing its instance count alone, with no code change; T-1 results shall be recorded for at least two instance counts. |
-| **Maintainability** | No service shall read or write another service's database tables; this shall be checked by code review and a dependency check. |
-| **Fairness** | When demand exceeds stock, the accepted requests shall match the server-assigned FIFO order in 100% of T-6 runs. |
-| **Testability** | Every requirement in Sections 3 to 5 shall be verified by at least one test in Section 6.2 or a review check, and the automated tests shall run without manual steps. |
+| **Correctness** | Stock and order states shall remain consistent under concurrent requests. |
+| **Reliability** | A successful purchase result shall not be lost because another noncritical operation fails. |
+| **Scalability** | Inventory, order, and payment processing shall be separable so that overloaded parts can be scaled independently. |
+| **Maintainability** | Inventory, order, and payment responsibilities shall remain clearly separated across the selected services. |
+| **Fairness** | The system shall use a defined server-side allocation rule when demand exceeds stock. |
+| **Testability** | The important bottlenecks and requirements shall be testable with automated load and functional tests. |
 
 ## 5.5 Business Rules
 
