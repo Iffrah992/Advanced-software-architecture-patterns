@@ -9,7 +9,7 @@ This project finds where a flash-sale purchase system breaks under heavy concurr
 
 | Document | Contents |
 |---|---|
-| [`docs/srs.md`](docs/srs.md) | Software Requirements Specification (IEEE template, v1.3) |
+| [`docs/srs.md`](docs/srs.md) | Software Requirements Specification (IEEE template, v1.4) |
 | [`docs/architecture-patterns.md`](docs/architecture-patterns.md) | Evaluation of Layered, Event-Driven, Microkernel, Microservices and Space-Based patterns |
 | [`adr/`](adr/README.md) | Architecture Decision Records (14 decisions) |
 
