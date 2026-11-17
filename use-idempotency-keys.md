@@ -1,7 +1,6 @@
-# Use idempotency keys
+# ADR-0011: Use idempotency keys
 
-**Date:** 2026-10-24
-**Step:** 2 · **Pattern:** Layered (business layer) · **Problem:** P4 Retry storms · **Requirements:** FR-16 – FR-19, CI-2, UI-1
+**Date:** 2026-11-10
 
 ## Status
 
@@ -9,29 +8,28 @@ Accepted
 
 ## Context
 
-When the page is slow, buyers click "Buy" again, browsers retry, and the network may deliver a request twice. Each repeat creates more load (1× → 2× → 4×), and without protection a repeat can create a second reservation, a second order, or a **second charge**. Retries cannot be prevented entirely, so they must be made harmless.
+When the system is slow, buyers click again and clients retry (B5). A repeated request can create a second reservation, a second order, or a second charge, and every repeat adds load. Retries cannot be prevented completely, so they must be made harmless (FR-13, FR-14, PR-2, SAF-2, BR-5).
 
 Options considered:
 
 | Option | Assessment |
 |---|---|
-| Disable the button only | Helps humans, but not network retries, refreshes or scripts |
-| Deduplicate by user ID | Blocks legitimate second attempts after a failed payment |
-| **Client-generated idempotency key per purchase attempt** | Standard approach; precise; works across servers |
+| Disable the Buy button only | Helps humans (UI-3) but not network retries, refreshes or scripts |
+| Deduplicate by user ID only | Blocks a legitimate new attempt after a failed payment |
+| **Unique request identifier per logical purchase attempt** | Standard, precise, works across instances and services |
 
 ## Decision
 
-1. The client generates a UUID v4 when the purchase page loads and sends it as the `Idempotency-Key` header on every attempt of that purchase.
-2. The server stores `key → (userId, status, response)`. It first tries to insert the key (`SET key value NX EX 86400` in Redis, or an insert into `idempotency_record` with the key as primary key).
-   - Insert succeeds → process the request normally and store the final response.
-   - Key already exists → return the stored response (or "processing") without doing any work.
-3. The key is bound to the user ID; a key presented by another user is rejected.
-4. Every payment-gateway call uses the **order ID** as the gateway's idempotency key, so our own retries to the bank never double-charge.
-5. The UI disables the Buy button after the first click (UI-1).
+1. The client creates a unique request identifier (UUID) for each logical purchase attempt and sends it with every retry of that attempt.
+2. The server stores the identifier with the user ID and the outcome. The first request inserts it and is processed; any later request with the same identifier returns the stored outcome (or *processing*) without doing new work.
+3. Identifiers are bound to the user; another user's identifier is rejected.
+4. In PostgreSQL the identifier is unique (DB-3); during the sale a fast copy may be kept in the in-memory layer so repeats are answered without database work.
+5. Every payment request uses the **order ID** as the payment idempotency key, so internal retries cannot double-charge.
+6. All event consumers are idempotent (ADR-0009).
+7. The UI disables the Buy button and shows status after the first click (UI-3).
 
 ## Consequences
 
-- A repeated click is recognised — no double reservation, no double charge (T-4: 0 duplicates with 3× retries).
-- Repeats are answered in milliseconds from Redis, which also reduces storm load.
-- Requires storage of keys for 24 h and an agreed header contract with the frontend.
-- All event consumers must also be idempotent (FR-16); this is applied in [Use event-driven broker topology](use-event-driven-broker-topology.md).
+- Retries cannot create extra reservations, orders or charges; verified by T-4 (PR-2 = 0).
+- Repeats are answered quickly, which reduces retry amplification.
+- Requires the client to send the identifier and the server to keep identifiers for a retention period.
