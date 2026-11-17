@@ -1,46 +1,36 @@
-# Use event-driven broker topology
+# ADR-0014: Choose the event-broker technology
 
-**Date:** 2026-10-25
-**Step:** 4 · **Pattern:** Event-Driven · **Problems:** P3, P1 · **Requirements:** FR-11, FR-14 – FR-16, RL-1, RL-2
+**Date:** 2026-11-10
 
 ## Status
 
-Accepted
+Proposed. To be accepted after the event-flow prototype (SRS Appendix C, item 3).
 
 ## Context
 
-[Release the database before payment](release-database-before-payment.md) requires purchase steps to run asynchronously and to react to outcomes (payment succeeded, failed, reservation expired). The event-driven pattern offers two topologies.
+ADR-0009 requires a broker for events between Inventory, Order and Payment. Requirements for the product:
 
-| Topology | How it works | For the flash sale |
+- durable queues and acknowledgements (no lost events);
+- competing consumers with bounded concurrency (steady payment processing);
+- dead-letter handling;
+- a good Spring Boot integration and easy container setup.
+
+After the admission gate, event volume is small (hundreds of purchase events per sale, not millions).
+
+| Option | Strengths | Weaknesses for this project |
 |---|---|---|
-| **Mediator** | A central mediator receives each purchase and orchestrates each step through channels | Every one of the 10,000 purchases passes through one component → a new central bottleneck and single point of failure; our flow is short and linear and does not need orchestration |
-| **Broker** | No central controller; each processor reacts to an event and publishes a new one through a lightweight broker | No single hot component; processors scale separately; matches a simple linear chain with one compensation path |
-
-Broker choice: RabbitMQ (work queues with acknowledgements, dead-letter queues, simple ops) vs Kafka (log replay, very high throughput). Our event volume is small (≈ hundreds of purchase events per sale after the gate), so RabbitMQ is sufficient and simpler.
+| **RabbitMQ** | Work queues, acknowledgements, dead-letter exchanges, Spring AMQP, simple to run | No long-term event replay |
+| Apache Kafka | Very high throughput, partitioned ordering, replayable log | More operational setup; capacity far beyond what is needed |
+| PostgreSQL-based queue (outbox polling only) | No extra component | Adds load to the database that the project is trying to relieve |
 
 ## Decision
 
-Use the **broker topology** with RabbitMQ. Event chain:
+**Proposed: RabbitMQ**, with durable queues, manual acknowledgements, one dead-letter queue per consumer, and bounded consumer concurrency for the Payment Service. Events are published from the transactional outbox (ADR-0009).
 
-```
-PurchaseAdmitted → StockReserved | SoldOut
-StockReserved    → OrderCreated → (payment workers) → PaymentSucceeded | PaymentFailed
-PaymentSucceeded → OrderConfirmed → notification
-PaymentFailed / ReservationExpired → StockReleased → gate admits next waitlisted ticket
-```
-
-Reliability rules:
-
-1. **Transactional outbox:** each state change and its event are written in the same DB transaction; a relay publishes from the outbox. No "saved but not announced" or the reverse.
-2. **At-least-once delivery + idempotent consumers:** each consumer records processed event IDs or checks state before acting (e.g. release only if reservation is `ACTIVE`).
-3. **Compensation instead of distributed transactions:** failure is handled by `StockReleased`, not by rollback across processors.
-4. **Dead-letter queues** for events that fail repeatedly, with alerts.
-5. **Bounded consumers:** payment workers have a fixed concurrency, so the bank receives a steady flow.
+The decision becomes Accepted when T-3 and T-5 pass on the prototype: payment delay does not affect inventory latency, and failed payments return stock correctly.
 
 ## Consequences
 
-- No central bottleneck in the purchase flow; payment, inventory and notifications scale independently.
-- Load is smoothed: bursts are absorbed by queues (*process gradually*).
-- Testing is harder: async flows and failure orders (e.g. payment success after expiry) need dedicated integration tests.
-- Developers must follow the outbox and idempotent-consumer rules everywhere; we provide shared helper classes and a checklist in code review.
-- The mediator topology remains an option for a future multi-step workflow (e.g. returns), recorded here as *considered, rejected for the purchase path*.
+- If accepted, RabbitMQ is added to the container setup and its queues are documented in the README.
+- Replaying past events is not supported; the outbox table and PostgreSQL records are the audit source.
+- If event volume or replay needs grow, Kafka can be reconsidered in a new ADR.
