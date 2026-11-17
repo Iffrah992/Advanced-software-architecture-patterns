@@ -1,57 +1,55 @@
-# Split into microservices
+# ADR-0010: Split into Inventory, Order and Payment microservices
 
-**Date:** 2026-10-26
-**Step:** 6 · **Pattern:** Microservices · **Requirements:** AV-2, DC-2, MA-2, PO-1
+**Date:** 2026-11-10
 
 ## Status
 
-Accepted. Supersedes the single-deployable part of [Use layered architecture as baseline](use-layered-architecture-as-baseline.md).
+Accepted. Supersedes the single-deployable structure of the baseline ([ADR-0003](use-layered-architecture-as-baseline.md)) for the target architecture.
 
 ## Context
 
-After Steps 1–5 the logic is correct and asynchronous, but everything is still one deployable. The parts have very different load profiles:
+The parts of the purchase flow have very different load profiles during a sale:
 
-| Part | Load at 12:00 |
+| Part | Load at sale start |
 |---|---|
-| Gate | The whole crowd (10,000+ requests per second) |
-| Inventory | ~120 claims (only admitted tickets) |
-| Payment | Limited by the bank's rate |
-| Order status | Continuous polling |
+| Admission gate | The whole crowd |
+| Inventory | Only admitted requests, but correctness-critical |
+| Order | Order creation plus status reads |
+| Payment | Limited by the external payment service |
 
-In a monolith we must scale everything to handle the Gate's load, and a bug or redeploy in notifications can take down purchases.
+In a monolith everything must be scaled for the heaviest part, and a fault in one area can stop purchases. The SRS requires inventory, order and payment to be separable and independently scalable (§5.4 Scalability, Maintainability; C-7).
 
-Topologies considered:
+Microservice topologies considered:
 
 | Topology | Assessment |
 |---|---|
-| API REST-based (fine-grained services via API gateway) | Good for the buyer-facing edge |
-| Application REST-based | Not needed; single UI |
-| Centralized messaging (broker between services) | Fits the event-driven design from Step 4 |
+| API REST-based | Suitable for the buyer-facing endpoints (purchase, status) |
+| Application REST-based | Not needed; the UI is minimal |
+| Centralized messaging | Fits the broker topology chosen in ADR-0009 |
 
 ## Decision
 
-Split into five services, using an **API gateway at the edge** and **centralized messaging (RabbitMQ)** between services:
+The target system is split into three services behind the admission gate, using **REST at the edge** and **centralized messaging** between services:
 
-| Service | Owns (own database/keyspace) | Scaling |
+| Service | Responsibility | Data |
 |---|---|---|
-| Gate | Tickets, rate limits, waitlist (Redis) | Scale out heavily before 12:00 |
-| Inventory | Stock, reservations | Single writer per SKU |
-| Order | Orders, purchase status (read endpoint) | Moderate |
-| Payment | Payment attempts | Bounded worker pool |
-| Notification | Outgoing messages | Any; failure does not block purchases |
+| Inventory Service | Atomic claim, reservations, release | Hot stock in memory (ADR-0007); reservation schema in PostgreSQL |
+| Order Service | Pending/confirmed/failed orders; purchase status for buyers | Order schema in PostgreSQL |
+| Payment Service | Payment requests and results | Payment-attempt schema in PostgreSQL |
 
-**Avoid dependencies and orchestration:**
+The admission gate is a separately scalable component in front of the Inventory Service (ADR-0005).
 
-1. No synchronous service-to-service calls on the purchase path (DC-2); services react to events.
-2. Database per service; no shared tables.
-3. Choreography, not orchestration — no central service directs the others.
-4. Data needed elsewhere travels inside events (e.g. price snapshot in `StockReserved`), accepting small duplication over coupling.
-5. Each service keeps a layered internal structure.
+Rules to avoid a distributed monolith:
+
+1. No synchronous service-to-service call chain on the purchase path; services react to events.
+2. Each service owns its schema; no service reads another service's tables.
+3. Choreography through events, not a central orchestrator.
+4. Data needed by another service travels in the event (e.g. price and user ID in `StockReserved`).
+5. Each service keeps a simple layered internal structure.
 
 ## Consequences
 
-- The Gate scales independently to absorb the burst; Payment stays bounded; failures are isolated.
-- Each service can be deployed and tested alone; event contracts need contract tests.
-- New costs: network latency, partial failures, distributed tracing (OB-1), more deployables (Docker Compose locally).
-- Eventual consistency: the status page may show "processing" briefly.
-- The Inventory service still depends on one hot DB row; addressed in [Keep hot stock in an in-memory grid](keep-hot-stock-in-memory-grid.md).
+- The gate and Inventory Service can be scaled for the burst while Payment stays bounded.
+- A failure in one service does not stop the others from accepting or finishing work (Reliability, §5.4).
+- New costs: network latency, partial failures, more deployables, contract testing of events, and a correlation ID in logs for tracing.
+- Status may briefly lag behind the real state (eventual consistency); the UI shows *processing*.
